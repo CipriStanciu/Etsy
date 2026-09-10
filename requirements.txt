@@ -1,0 +1,11 @@
+# Fragrance Bot runtime dependencies.
+#
+# The recipe engine (fragbot/) is standard-library ONLY.
+# The listing image generator (fragbot/imagesgen/) needs Pillow — a free,
+# open-source imaging library (no paid services, no network at render time).
+# The recipe-card PDF generator (fragbot/pdfgen/) needs ReportLab — a free,
+# BSD-licensed PDF library (no network at render time, vendored free fonts).
+# pypdf (BSD) is used by the PDF verifier (verify_pdfs.py / `pdfgen verify`).
+Pillow>=10.0
+reportlab>=4.0
+pypdf>=4.0

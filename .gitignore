@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+output/
+seed_library/
+*.egg-info/
+dist/
+build/
+examples-images/
+examples-pdfs/
+_verify_out/
+verification-*.txt
