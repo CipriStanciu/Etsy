@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "fragbot"
+version = "0.1.0"
+description = "Fragrance Bot recipe engine + listing image generator (PIL) + recipe-card PDF generator (ReportLab)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+dependencies = ["Pillow>=10.0", "reportlab>=4.0"]
+# The recipe engine itself is standard-library only; Pillow is required only
+# by fragbot.imagesgen (listing images) and ReportLab only by fragbot.pdfgen
+# (the digital-download recipe-card PDF). pypdf is used by the PDF verifier.
+[project.optional-dependencies]
+verify = ["pypdf>=4.0"]
+[tool.setuptools]
+packages = ["fragbot", "fragbot.imagesgen", "fragbot.pdfgen"]
+[tool.setuptools.package-data]
+fragbot = ["data/ingredients.json"]
+"fragbot.imagesgen" = ["fonts/*.ttf", "fonts/OFL-*.txt", "data/srgb.icc"]
