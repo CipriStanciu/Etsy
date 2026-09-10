@@ -38,6 +38,14 @@ fragbot/
 ├── verification-output.txt      captured output of the last engine verify run
 ├── verification-images-output.txt  captured output of the last images verify run
 ├── verification-pdfs-output.txt   captured output of the last PDF verify run
+├── fragbot/db.py          Supabase storage layer (Postgres / PostgREST / stub)
+├── seed_recipes.py        seeds the recipe library (deterministic, idempotent)
+├── verify_supabase.py     Supabase-layer verification (no live DB needed)
+├── supabase/
+│   └── schema.sql         table DDL (recipes + daily_posts) — paste in SQL editor
+├── scripts/
+│   └── pglite_bridge.cjs  dev-only: runs the DB checks against real Postgres
+│                          (PGlite, WASM) — see "Verifying without a live DB"
 ├── pyproject.toml
 └── requirements.txt       Pillow (images), ReportLab + pypdf (PDFs)
 ```
@@ -378,3 +386,126 @@ Fonts are **not** duplicated here — `fonts.py` registers
 and pypdf (BSD, for verification) are the only additional dependencies and are
 listed in `requirements.txt` / `pyproject.toml`; the engine itself stays
 standard-library-only.
+
+# Fragrance Bot — Supabase layer (storage)
+
+The pipeline's persistence: a recipe library (`recipes`) and a per-date
+schedule (`daily_posts`) on a free-tier Supabase project. Everything here is
+free-tier-OK, credentials are env-only, and the whole layer can be verified
+before a database even exists (see "Verifying without a live DB" below).
+
+## 1. Create the Supabase project (free tier)
+
+1. Sign up / log in at <https://supabase.com> (free plan is enough).
+2. **New project** → pick a region near you and a strong database password
+   (**save it** — it is shown once and is *not* the same as your login).
+3. Wait for provisioning (a minute or two).
+
+## 2. Create the tables
+
+Open **SQL Editor → New query**, paste the whole `supabase/schema.sql`, and
+**Run**. (Or from a terminal: `psql "$POSTGRES_URL" -f supabase/schema.sql`.)
+The file is idempotent, so re-running it is safe.
+
+It creates:
+
+| table | purpose | notes |
+|---|---|---|
+| `recipes` | one row per generated recipe | `slug` UNIQUE; `status` in `draft` / `draft_ready` / `listed` / `archived`; index on `(status, created_at)` for the daily queue |
+| `daily_posts` | one row per calendar date the cron processes | `date` PK; `recipe_id` FK → `recipes.id`; `status` in `scheduled` / `posted` / `skipped` / `failed`; views/favorites/sales counters |
+
+`status` semantics: `draft` = in the library but not queued; `draft_ready` =
+in the daily posting queue (the cron draws these oldest-first); `listed` =
+a listing was created (listing_id/etsy_url set); `archived` = retired.
+`daily_posts.status` mirrors the cron run: `scheduled` → `posted` / `skipped`
+/ `failed`.
+
+## 3. Set the environment variables
+
+Get them from **Project Settings → API** (URL + `service_role` key) and
+**Project Settings → Database → Connection string**.
+
+| variable | where from | used by |
+|---|---|---|
+| `POSTGRES_URL` | Database → Connection string (session pooler recommended for short scripts) — the password is the **database password** from step 1 | recommended backend for seed + cron (`PostgresStore`, direct SQL) |
+| `SUPABASE_URL` | Project Settings → API → Project URL (e.g. `https://xxxx.supabase.co`) | alternative REST backend (`SupabaseRestStore`) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Project Settings → API → `service_role` (secret! never expose client-side) | alternative REST backend |
+
+Set the ones you use in your shell / GitHub Actions secrets. Nothing is
+hardcoded — `fragbot/db.py` reads these three names only.
+
+## 4. Seed the library
+
+```bash
+pip install 'psycopg[binary]'        # optional; only the Postgres backend needs it
+export POSTGRES_URL='postgresql://...'   # from step 3
+
+# live seed: 60 deterministic recipes (2026-01-01 onwards),
+# first 30 status='draft_ready', remaining 30 status='draft'
+python3 seed_recipes.py
+
+# preview without touching a database (logs the exact SQL)
+python3 seed_recipes.py --dry-run
+python3 seed_recipes.py --dry-run --sql-out seed_library.sql   # runnable script
+```
+
+The seed is **idempotent and non-destructive**:
+
+- it upserts on `recipes.slug`, so re-running never duplicates rows;
+- it refreshes content fields only — it never resets `status` /
+  `listing_id` / `etsy_url` / `created_at` / `listed_at`, so recipes that
+  already progressed to `listed` are left alone.
+
+`created_at` is staggered oldest-first, which is exactly how the daily cron
+drains the queue: `get_next_draft_recipe()` returns the oldest unlisted
+`draft_ready` recipe.
+
+## 5. Using the storage layer from code
+
+```python
+from fragbot.db import get_store
+
+db = get_store()                      # picks backend from env vars
+recipe = db.get_next_draft_recipe()   # oldest unlisted draft_ready, or None
+db.mark_listed(recipe["id"], "123456789", "https://www.etsy.com/listing/123456789")
+db.record_daily_post(date(2026, 1, 19), recipe["id"], status="posted")
+db.update_daily_post_metrics(date(2026, 1, 19), views=12, favorites=3, sales=1)
+```
+
+Backends (same interface, chosen automatically):
+
+- `PostgresStore` — direct SQL via psycopg 3 (`POSTGRES_URL`). Recommended:
+  transactional seed, atomic metric increments.
+- `SupabaseRestStore` — pure-stdlib client of Supabase's PostgREST API
+  (`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`). Zero extra dependencies.
+- `StubStore` — in-memory, used by tests / dry runs.
+
+`get_store()` raises `StoreNotConfiguredError` (with hints) when no
+credentials are set.
+
+## Verifying without a live DB
+
+```bash
+python3 verify_supabase.py     # writes verification-supabase.txt
+```
+
+24 checks across five areas: seed counts/uniqueness/schema-validity,
+store logic (stub + SQL builders), **real Postgres semantics** (schema DDL,
+CHECK/UNIQUE/FK constraints, the exact seed SQL, queue + metrics SQL), the
+REST store's request shape against a mock PostgREST server, and the seed
+CLI's SQL dump.
+
+The Postgres-engine checks run on **PGlite** — Postgres compiled to WASM —
+so the schema and every SQL statement are executed by a genuine Postgres
+engine, not mocked. One-time dev setup:
+
+```bash
+mkdir -p /tmp/pgverify && cd /tmp/pgverify && npm install @electric-sql/pglite
+# verify_supabase.py finds it there automatically; or point it somewhere else:
+# export PGLITE_MODULE_PATH=/path/to/node_modules
+```
+
+If node/PGlite is missing, only the Postgres-engine checks are skipped
+(everything else still runs) and the report says so explicitly. What cannot
+be verified locally is only the network hop to Supabase's servers — that is
+done once the real credentials land in Secrets.
