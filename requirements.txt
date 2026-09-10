@@ -9,3 +9,7 @@
 Pillow>=10.0
 reportlab>=4.0
 pypdf>=4.0
+# Optional — only the direct-SQL backend of the Supabase storage layer
+# (fragbot/db.py PostgresStore) needs psycopg; the REST backend is stdlib-only.
+#   pip install 'psycopg[binary]'
+# psycopg[binary]>=3.1

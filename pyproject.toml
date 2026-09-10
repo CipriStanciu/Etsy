@@ -14,6 +14,10 @@ dependencies = ["Pillow>=10.0", "reportlab>=4.0"]
 # (the digital-download recipe-card PDF). pypdf is used by the PDF verifier.
 [project.optional-dependencies]
 verify = ["pypdf>=4.0"]
+# Supabase storage layer (fragbot/db.py). Only the direct-SQL PostgresStore
+# needs psycopg; the SupabaseRestStore is pure stdlib and the StubStore needs
+# nothing, so the base install stays dependency-light.
+db = ["psycopg[binary]>=3.1"]
 [tool.setuptools]
 packages = ["fragbot", "fragbot.imagesgen", "fragbot.pdfgen"]
 [tool.setuptools.package-data]
