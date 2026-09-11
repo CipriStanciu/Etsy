@@ -13,3 +13,7 @@ pypdf>=4.0
 # (fragbot/db.py PostgresStore) needs psycopg; the REST backend is stdlib-only.
 #   pip install 'psycopg[binary]'
 # psycopg[binary]>=3.1
+# The Etsy API client (fragbot/etsy), the daily posting pipeline
+# (scripts/daily_post.py) and the local verification mock (scripts/mock_etsy.py)
+# are 100% standard-library (urllib) — no extra dependency, no paid services.
+# The optional Resend notification email also uses urllib directly.

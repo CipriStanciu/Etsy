@@ -9,3 +9,8 @@ examples-images/
 examples-pdfs/
 _verify_out/
 verification-*.txt
+secrets/
+logs/
+*.log
+etsy_refresh_token*
+.gh-token
