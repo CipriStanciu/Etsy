@@ -1,0 +1,70 @@
+# Fragrance Bot — daily Etsy posting cron (8:00 AM UTC, every day).
+#
+# Draws the oldest draft_ready recipe from Supabase, renders its 5 listing
+# images + recipe-card PDF, creates a digital-download listing on Etsy,
+# uploads everything, activates it and records the post. See
+# scripts/daily_post.py and the README's "Etsy posting pipeline" section.
+#
+# Secrets required (GitHub -> Settings -> Secrets and variables -> Actions):
+#   ETSY_KEYSTRING               App API Key keystring (developers.etsy.com)
+#   ETSY_REFRESH_TOKEN           refresh token from scripts/etsy_oauth.py
+#   ETSY_SHOP_ID                 numeric id of the owner's Etsy shop
+#   SUPABASE_URL                 + SUPABASE_SERVICE_ROLE_KEY   (REST backend)
+#   POSTGRES_URL                 (alternative direct-SQL backend)
+# Optional:
+#   ETSY_TAXONOMY_ID             pin the seller-taxonomy node (recommended)
+#   ETSY_SHIPPING_PROFILE_ID     attach a shipping profile (not needed for
+#                                digital downloads)
+#   RESEND_API_KEY + ETSY_NOTIFY_TO   daily notification email
+name: daily-post
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # 08:00 UTC every day
+  workflow_dispatch: {}   # manual trigger from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ETSY_KEYSTRING: ${{ secrets.ETSY_KEYSTRING }}
+      ETSY_REFRESH_TOKEN: ${{ secrets.ETSY_REFRESH_TOKEN }}
+      ETSY_SHOP_ID: ${{ secrets.ETSY_SHOP_ID }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+      ETSY_TAXONOMY_ID: ${{ secrets.ETSY_TAXONOMY_ID }}
+      ETSY_SHIPPING_PROFILE_ID: ${{ secrets.ETSY_SHIPPING_PROFILE_ID }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      ETSY_NOTIFY_TO: ${{ secrets.ETSY_NOTIFY_TO }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the daily Etsy posting pipeline
+        run: python3 scripts/daily_post.py --log-file logs/daily-post.log
+        # Non-zero exit (owner spec) makes the run FAIL visibly in the
+        # Actions UI; the recipe is left draft_ready and retried the next
+        # day. Logs are stored as a workflow artifact for diagnosis.
+        continue-on-error: false
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-post-logs
+          path: logs/
+          retention-days: 14

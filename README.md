@@ -509,3 +509,130 @@ If node/PGlite is missing, only the Postgres-engine checks are skipped
 (everything else still runs) and the report says so explicitly. What cannot
 be verified locally is only the network hop to Supabase's servers — that is
 done once the real credentials land in Secrets.
+
+# Fragrance Bot — Etsy posting pipeline (digital-download listings)
+
+Daily automation that turns the next `draft_ready` recipe in the Supabase
+library into a live Etsy digital-download listing: 5 SEO listing images, a
+recipe-card PDF, activation, and a store/email record — every day at 08:00
+UTC via GitHub Actions.
+
+## 1. Create the Etsy app (one-time, ~5 min)
+
+1. Go to <https://www.etsy.com/developers/your-apps> → **Create a new app**.
+2. Name it (e.g. "Fragrance Bot"), accept the terms — you'll get the
+   **keystring** (`ETSY_KEYSTRING`) and the **shared secret**.
+3. In the app's **Redirect URIs** add exactly:
+   `http://localhost:8080/callback` (the one-time OAuth helper below uses it;
+   Etsy requires exact matches and allows localhost).
+4. Copy the keystring — keep it secret.
+
+## 2. One-time owner authorization — get ETSY_REFRESH_TOKEN
+
+The owner must approve the app ONCE. From this repo (Python 3.9+):
+
+```bash
+export ETSY_KEYSTRING=<your keystring>
+python3 scripts/etsy_oauth.py
+```
+
+- The script starts a local callback server, prints an **Etsy authorize URL**
+  (PKCE S256, scopes `listings_r listings_w transactions_r shops_r`), waits
+  for the `code`, exchanges it, and prints the **REFRESH TOKEN**.
+- The owner opens the URL while logged into the shop's Etsy account, approves
+  the app, and returns to the terminal.
+- **Save the printed refresh token as the GitHub secret `ETSY_REFRESH_TOKEN`**
+  (keep it secret — anyone holding it can manage the shop).
+- Note: Etsy **rotates** refresh tokens on every refresh. The pipeline
+  persists each new token automatically (see "Token rotation" below), so the
+  secret is only the bootstrap.
+
+## 3. Environment variables
+
+| variable | required | where from | used by |
+|---|---|---|---|
+| `ETSY_KEYSTRING` | yes | Your Apps page keystring | API auth |
+| `ETSY_REFRESH_TOKEN` | yes | `scripts/etsy_oauth.py` output | OAuth refresh |
+| `ETSY_SHOP_ID` | yes | shop URL `/your-shop` → numeric id | listing endpoints |
+| `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` | one of | Supabase → Project Settings → API | recipe queue (REST) |
+| `POSTGRES_URL` | (or) | Supabase → Database → Connection string | recipe queue (SQL) |
+| `ETSY_TAXONOMY_ID` | optional | your Etsy shop's listing category id | pin the category |
+| `ETSY_SHARED_SECRET` | optional | Your Apps page | `x-api-key` header |
+| `ETSY_SHIPPING_PROFILE_ID` | optional | Shop Manager → Shipping profiles | attach profile |
+| `RESEND_API_KEY` + `ETSY_NOTIFY_TO` | optional | resend.com | daily notification email |
+| `ETSY_NOTIFY_FROM` | optional | your verified Resend domain | sender address |
+
+Taxonomy: by default the client fetches Etsy's seller taxonomy and picks the
+deepest node matching the DIY/download keywords (Craft Supplies & Tools
+branch); it falls back to `563` (Craft Supplies & Tools root) when nothing
+matches and `ETSY_TAXONOMY_ID` overrides everything. **Recommended:** run once
+live, then pin the exact category you want via `ETSY_TAXONOMY_ID`.
+
+## 4. Local dry run (no credentials needed)
+
+```bash
+python3 scripts/daily_post.py --dry-run
+```
+Renders the images + PDF from an example recipe and prints the **exact
+payloads** that would be sent to Etsy (createListingDraft, 5 image uploads,
+file upload, activation, getListing) — nothing touches the network.
+
+## 5. Daily cron (GitHub Actions)
+
+`.github/workflows/daily-post.yml` runs `python3 scripts/daily_post.py` on
+`0 8 * * *` (UTC), with `workflow_dispatch` for manual runs. Order of
+operations per run:
+
+```
+get_next_draft_recipe → render 5 images → render PDF
+ verify shop → resolve taxonomy → createListingDraft (type=download, qty 999,
+  who_made=i_did, when_made=made_to_order, is_supply=false, ≤13 tags)
+ upload 5 images (rank 1..5, alt text) → activate (state=active)
+ uploadListingFile (the PDF) → getListing (public URL)
+ mark_listed(recipe_id, listing_id, etsy_url) + record_daily_post('posted')
+ optional Resend email (only if RESEND_API_KEY set; else the URL is logged)
+```
+
+Notes on the API surface (checked against Etsy's official OpenAPI v3 spec,
+`www.etsy.com/openapi/generated/oas/3.0.0.json` — extracted maps live in
+`fragbot/etsy/spec.py`):
+
+- There is **no `is_digital` create-listing parameter**; digital-ness comes
+  from `type=download` plus actually uploading the digital file.
+- `tags` is one comma-separated form field; title must be ≤ 140 chars, tags
+  ≤ 13 of ≤ 20 chars (the client validates before sending anything).
+- Activation (`updateListing` with `state=active`) requires an image set;
+  file upload does not require an active listing, so the pipeline activates
+  first and attaches the file after — with an automatic fallback that uploads
+  the file first if Etsy demands one before activation.
+
+**Failure semantics (owner spec):** on ANY Etsy API error the run exits
+non-zero, the recipe stays `draft_ready` (never `mark_listed`), the day is
+recorded `failed` in `daily_posts`, and the next run retries the same recipe.
+Idempotent by construction: only `draft_ready` recipes with no `listing_id`
+are ever picked. If a failure happens *after* the draft was created, the
+orphaned draft stays on Etsy for manual cleanup and its id is logged.
+
+**Token rotation:** after each OAuth refresh the NEW refresh token is
+persisted into the `etsy_tokens` table (created lazily via
+`CREATE TABLE IF NOT EXISTS` against your Supabase/Postgres credentials; a
+gitignored `secrets/etsy_refresh_token` file is the local fallback). If the
+Supabase layer is unreachable, a warning is logged and the run continues.
+
+## 6. Verification (no live Etsy credentials)
+
+```bash
+python3 verify_etsy.py            # 53 checks vs. a local mock Etsy API
+python3 verify.py                 # recipe engine regression (55/55)
+python3 verify_supabase.py        # storage regression (24/24)
+```
+
+`verify_etsy.py` spins up `scripts/mock_etsy.py` (stdlib http.server —
+token, shop, taxonomy, createListingDraft, uploadListingImage,
+uploadListingFile, updateListing, getListing; fault injection for 429/500)
+and asserts: the full happy-path cycle + `mark_listed`; ≥150 ms request
+spacing; retry-on-429 honoring Retry-After; failure leaves the recipe
+`draft_ready` and exits non-zero; title/tag length enforcement before any
+request; payload field names match the OpenAPI spec; refresh-token rotation
+persistence; and the one-time OAuth helper's URL. Full output is captured in
+`verification-etsy.txt` (gitignored).
