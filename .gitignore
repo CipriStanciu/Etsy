@@ -7,6 +7,7 @@ dist/
 build/
 examples-images/
 examples-pdfs/
+examples-promo/
 _verify_out/
 verification-*.txt
 secrets/

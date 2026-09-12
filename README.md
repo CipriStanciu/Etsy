@@ -27,14 +27,18 @@ fragbot/
 │   │   └── ingredients.json   ← CURATE THE INGREDIENT DATABASE HERE
 │   ├── imagesgen/         listing image generator (PIL) — see its own
 │   │                      section below
-│   └── pdfgen/            recipe-card PDF generator (ReportLab) — see its
-│                          own section below
+│   ├── pdfgen/            recipe-card PDF generator (ReportLab) — see its
+│   │                      own section below
+│   └── promo/             social promo engine (pin / story / tiktok / email)
+│                          — see its own section below
 ├── examples/              3 sample recipes (perfume day, candle day, holiday day)
 ├── examples-images/       rendered 5-image sets for the examples (generated)
 ├── examples-pdfs/         rendered recipe-card PDFs for the examples (generated)
+├── examples-promo/        generated promo assets for the examples (generated)
 ├── verify.py              engine self-test / verification script (55 checks)
 ├── verify_images.py       image-generator verification (output spec checks)
 ├── verify_pdfs.py         PDF-generator verification (output spec checks)
+├── verify_promo.py        promo-engine verification (output spec checks)
 ├── verification-output.txt      captured output of the last engine verify run
 ├── verification-images-output.txt  captured output of the last images verify run
 ├── verification-pdfs-output.txt   captured output of the last PDF verify run
@@ -658,3 +662,65 @@ bash scripts/dashboard_smoke.sh   # starts prod server, curls all routes, writes
 **Deploy to Vercel (free tier)** — import the repo, root directory `dashboard`. Env vars as above in the project settings (never in code). Build command `npm run build`, output `Next.js` default. The API route needs no serverless extensions; `pg` is externalized server-side (`serverExternalPackages`) and never reaches the client bundle.
 
 **Stub data** — `dashboard/data/stub.json` is committed so the dashboard is fully browsable with no credentials; regenerate with `python3 dashboard/scripts/generate_stub.py` (Python engine required, run from repo root).
+## 9. Social promotion engine (`fragbot/promo/`)
+
+Auto-generated social promotion content for every recipe — all Pillow /
+stdlib, no network at render time, matching the listing-image brand (same
+vendored fonts and palette via `fragbot/imagesgen/style.py` + `fonts.py`).
+
+For any recipe JSON the engine produces four assets:
+
+| file        | format      | what it is                                                     |
+|-------------|-------------|----------------------------------------------------------------|
+| `pin.jpg`   | 1000×1500   | Pinterest pin: dark hero card, "Save this scent recipe", price/difficulty badge |
+| `story.jpg` | 1080×1920   | Instagram story: scent-pyramid visual, "Swipe up for recipe" CTA, `@FragranceBot` handle placeholder |
+| `tiktok.txt`| text        | ~15-second voiceover script (hook / body / CTA) + 3-shot shot list |
+| `email.txt` | text        | newsletter teaser: subject line + exactly two sentences        |
+
+Holiday awareness: when the recipe has `holiday` set (e.g. `Valentine's Day`),
+the pin shows a small "VALENTINE'S DAY EDITION" pill with a heart and the
+story shows it in the header eyebrow — subtle, on-brand. Everything is
+deterministic: same recipe JSON + same brand ⇒ byte-identical files.
+
+**Generate for one recipe (or a whole directory of them):**
+
+```bash
+python3 -m fragbot.promo generate examples/recipe-2026-02-11-valentine-holiday.json --out promo/
+# → promo/pin.jpg, promo/story.jpg, promo/tiktok.txt, promo/email.txt
+python3 -m fragbot.promo generate examples/ --out promo-all/        # per-slug subdirs
+```
+
+Brand is configurable via `--brand` or `FRAGBOT_BRAND` (default `Fragrance Bot`).
+
+**Verify** (mirrors verify.py / verify_images.py; exit 0 = PASS):
+
+```bash
+python3 verify_promo.py            # 3 example recipes + a long-name stress recipe
+python3 -m fragbot.promo verify    # same, from inside the repo
+```
+
+`verify_promo.py` renders each recipe twice and asserts: exact canvas sizes
+(1000×1500, 1080×1920), RGB JPEG at quality 90, files < 5 MB, byte-identical
+re-runs, non-empty text files containing the recipe name / price / CTA, the
+2-sentence email body with a `Subject:` line, colour-sampled layout anchors
+(dark hero, cream canvas, the three pyramid fills), and — because the
+renderers raise on overflow by construction — no text overflowing the canvas,
+exercised with a worst-case long recipe name and 5-note lists.
+
+**Integrating with the daily posting pipeline (`scripts/daily_post.py`)**
+
+Chosen: an optional `--promo` flag on the existing daily post script (default
+off), plus the standalone CLI above as the primary interface. Reasoning:
+promo assets are not consumed by Etsy posting and need no Etsy credentials,
+so generating them belongs on the side of the posting flow — a separate
+byproduct, not a posting step. The flag keeps the pipeline's behaviour (and
+its 53 mock checks) unchanged unless asked for:
+
+```bash
+python3 scripts/daily_post.py --promo --work-dir /tmp/post  # adds /tmp/post/promo/*
+```
+
+With `--promo` the run also writes the four promo files into
+`<work-dir>/promo/` and records their paths in the run summary under
+`summary["promo"]` — ready for the social-posting step (Pinterest/Instagram
+embed, TikTok/email copy) that this repo automates next.
