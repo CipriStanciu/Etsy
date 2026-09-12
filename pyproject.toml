@@ -19,7 +19,9 @@ verify = ["pypdf>=4.0"]
 # nothing, so the base install stays dependency-light.
 db = ["psycopg[binary]>=3.1"]
 [tool.setuptools]
-packages = ["fragbot", "fragbot.imagesgen", "fragbot.pdfgen", "fragbot.etsy"]
+packages = ["fragbot", "fragbot.imagesgen", "fragbot.pdfgen", "fragbot.etsy",
+            "fragbot.promo"]
 [tool.setuptools.package-data]
 fragbot = ["data/ingredients.json"]
 "fragbot.imagesgen" = ["fonts/*.ttf", "fonts/OFL-*.txt", "data/srgb.icc"]
+"fragbot.promo" = []
