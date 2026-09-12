@@ -1,0 +1,27 @@
+{
+  "name": "fragbot-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fragrance Bot owner dashboard — daily post tracker, calendar, metrics, inventory alerts, SEO scorecard, UTM builder (Next.js App Router, free tier)",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "smoke": "bash scripts/dashboard_smoke.sh"
+  },
+  "dependencies": {
+    "next": "15.5.25",
+    "pg": "8.13.1",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.17.6",
+    "@types/pg": "8.11.10",
+    "@types/react": "19.1.0",
+    "typescript": "5.8.2"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  }
+}

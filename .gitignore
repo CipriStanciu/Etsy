@@ -14,3 +14,12 @@ logs/
 *.log
 etsy_refresh_token*
 .gh-token
+
+# dashboard (Next.js) artifacts
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/.env
+dashboard/.env.local
+dashboard/next-env.d.ts
+dashboard-smoke.txt

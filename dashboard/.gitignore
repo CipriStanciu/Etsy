@@ -1,0 +1,14 @@
+# dependencies / build output
+node_modules/
+.next/
+out/
+next-env.d.ts
+
+# never commit credentials
+.env
+.env.local
+.env.*.local
+
+# logs / local artifacts
+npm-debug.log*
+*.tsbuildinfo
