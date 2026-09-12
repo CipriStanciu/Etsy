@@ -65,7 +65,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
 def cmd_verify(args: argparse.Namespace) -> int:
     files: list = []
-    for arg in args.recipes:
+    for arg in (args.recipes or [str(Path(__file__).resolve().parent.parent.parent / "examples")]):
         files.extend(_collect_recipe_files(arg))
     if not files:
         print("no recipe JSON files found for verify", file=sys.stderr)
@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.set_defaults(func=cmd_generate)
 
     v = sub.add_parser("verify", help="generate + assert the output spec for example recipes")
-    v.add_argument("--recipes", nargs="+",
+    v.add_argument("--recipes", nargs="+", default=None,
                    help="recipe JSON files/dirs to verify [default: repo examples/]")
     v.add_argument("--out", default=None,
                    help="work directory for generated sets (kept for inspection) [default: temp]")

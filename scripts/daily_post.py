@@ -36,8 +36,8 @@ prints the exact payloads that would be sent.
 
 Usage
 -----
-    # live
-    python3 scripts/daily_post.py [--log-file logs/daily.log]
+    # live (add --promo to also render the 4 social promo assets)
+    python3 scripts/daily_post.py [--promo] [--log-file logs/daily.log]
 
     # dry run against an example recipe (no credentials needed)
     python3 scripts/daily_post.py --dry-run
@@ -168,6 +168,7 @@ def run_daily_post(
     dry_run: bool = False,
     work_dir: Optional[Path] = None,
     client: Optional[EtsyClient] = None,
+    promo: bool = False,
 ) -> Dict[str, Any]:
     """Run one daily posting cycle. Returns a summary dict.
 
@@ -208,6 +209,13 @@ def run_daily_post(
     summary["images"] = {k: images[k] for k in IMAGE_KINDS}
     summary["pdf"] = str(pdf_path)
     log.info("rendered 5 listing images + PDF at %s", work)
+    if promo:
+        # Optional social-promo byproduct (flag off by default): the four
+        # promo assets are NOT needed by Etsy posting, they are produced
+        # alongside so social content exists for the same recipe.
+        from fragbot.promo import generate_all as render_promo
+        summary["promo"] = render_promo(recipe, str(work / "promo"), brand=BRAND)
+        log.info("rendered 4 social promo assets at %s", work / "promo")
 
     if dry_run:
         # Payload builder only: no network, no real credentials required.
@@ -343,6 +351,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="also append logs to this file (stdout is always used)")
     ap.add_argument("--work-dir", default=None,
                     help="directory for rendered images/PDF (default: temp)")
+    ap.add_argument("--promo", action="store_true",
+                    help="also render the 4 social promo assets (pin.jpg, "
+                         "story.jpg, tiktok.txt, email.txt) into "
+                         "<work-dir>/promo as a byproduct of the post")
     return ap
 
 
@@ -376,7 +388,8 @@ def main(argv: Optional[list] = None, store=None) -> int:
 
     try:
         run_daily_post(store, dry_run=args.dry_run, work_dir=(
-            Path(args.work_dir) if args.work_dir else None))
+            Path(args.work_dir) if args.work_dir else None),
+            promo=args.promo)
     except EtsyError as exc:
         # Owner spec: log, leave the recipe draft_ready, exit non-zero.
         log.error("daily post failed: %s", exc)

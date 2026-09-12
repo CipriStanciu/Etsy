@@ -24,4 +24,3 @@ packages = ["fragbot", "fragbot.imagesgen", "fragbot.pdfgen", "fragbot.etsy",
 [tool.setuptools.package-data]
 fragbot = ["data/ingredients.json"]
 "fragbot.imagesgen" = ["fonts/*.ttf", "fonts/OFL-*.txt", "data/srgb.icc"]
-"fragbot.promo" = []
