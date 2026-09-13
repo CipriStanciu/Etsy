@@ -1,5 +1,10 @@
 # Fragrance Bot — recipe engine
 
+> **Owner setup — GO LIVE:** the complete step-by-step guide for wiring real
+> credentials (Supabase, Etsy OAuth), adding the GitHub Secrets, verifying the
+> daily cron and running the first live posting is in
+> **[`SETUP.md`](SETUP.md)**. Follow it in order from top to bottom.
+
 Generates one unique, realistic, perfumery-safe DIY fragrance recipe per day
 (deterministic per date), plus batch generation for seeding the recipe library.
 This package is the foundation the image generator, PDF generator, Supabase
