@@ -322,8 +322,13 @@ class PostgresStore:
 class SupabaseRestStore:
     """PostgREST store over SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY.
 
-    Pure stdlib (urllib) — no third-party dependencies. Handles upserts via
-    PostgREST's ``Prefer: resolution=merge-duplicates`` header. Metric
+    Pure stdlib (urllib) — no third-party dependencies. Recipe upserts use
+    PostgREST's ``?on_conflict=slug`` with ``Prefer:
+    resolution=merge-duplicates,return=representation``: the conflict target
+    is the slug unique constraint (the table's PK is a generated id, so
+    PostgREST would otherwise infer that and never merge), and
+    ``return=representation`` asks for the upserted row back (PostgREST
+    returns an empty body for POST unless it is requested). Metric
     increments are read-modify-write (PostgREST has no atomic increment in
     the basic API) — fine for a single-writer cron.
     """
@@ -371,7 +376,8 @@ class SupabaseRestStore:
         row.pop("listed_at", None)
         out = self._request(
             "POST", "/rest/v1/recipes", body=row,
-            prefer="resolution=merge-duplicates",
+            params="on_conflict=slug",
+            prefer="resolution=merge-duplicates,return=representation",
         )
         if not out or "id" not in out[0]:
             raise StoreError(f"upsert_recipe: no id returned for slug={recipe.get('slug')!r}")
