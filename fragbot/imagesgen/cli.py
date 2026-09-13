@@ -63,7 +63,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
 def cmd_verify(args: argparse.Namespace) -> int:
     files: list = []
-    for arg in args.recipes:
+    for arg in (args.recipes or [str(Path(__file__).resolve().parent.parent.parent / "examples")]):
         files.extend(_collect_recipe_files(arg))
     if not files:
         print("no recipe JSON files found for verify", file=sys.stderr)
