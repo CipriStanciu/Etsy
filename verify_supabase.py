@@ -21,8 +21,10 @@ C. Real Postgres semantics via PGlite (Postgres compiled to WASM) — SKIPPED
      re-running it keeps 60 rows (idempotent)
    - get_next_draft_recipe / mark_listed / daily posts / metrics SQL
 D. SupabaseRestStore request shape against a local mock PostgREST server:
-   - upsert headers (Prefer: resolution=merge-duplicates, Authorization),
-     query parameters for next-draft, PATCH bodies for mark_listed/metrics
+   - upsert headers/params (on_conflict=slug, Prefer:
+     resolution=merge-duplicates,return=representation, Authorization),
+     query parameters for next-draft, PATCH bodies for
+     mark_listed/metrics
 E. seed_recipes.py CLI: --dry-run --sql-out produces a runnable SQL script.
 
 NOTE ON SCOPE: with no SUPABASE_URL / POSTGRES_URL in the environment, no
@@ -444,9 +446,11 @@ def section_d(mock: MockServer) -> None:
     price = f"{float(recipes[0]['price_usd']):.2f}"
     rid = store.upsert_recipe(recipes[0], "draft_ready", datetime(2026, 1, 1, tzinfo=timezone.utc))
     req = MockHandler.requests[-1]
-    check("D1: REST upsert posts to /rest/v1/recipes with merge-duplicates",
-          lambda: None if (req["method"] == "POST" and req["path"] == "/rest/v1/recipes"
-                           and req["prefer"] == "resolution=merge-duplicates"
+    check("D1: REST upsert posts to /rest/v1/recipes on_conflict=slug and requests the row back",
+          lambda: None if (req["method"] == "POST"
+                           and req["path"].startswith("/rest/v1/recipes")
+                           and "on_conflict=slug" in req["path"]
+                           and req["prefer"] == "resolution=merge-duplicates,return=representation"
                            and req["apikey"] == "test-service-key"
                            and req["authorization"] == "Bearer test-service-key"
                            and req["body"]["slug"] == recipes[0]["slug"]
