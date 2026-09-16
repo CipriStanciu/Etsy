@@ -20,6 +20,10 @@ do the six things below, in order.
 Everything you need is free: Supabase free tier, GitHub Actions free tier,
 Etsy's API, Python's Pillow/ReportLab (open source). The only recurring cost
 is Etsy's **$0.20 per-listing fee**, which Etsy bills to your shop directly.
+At the default posting cadence — one new listing **every 3 days** (see
+`FRAGBOT_POST_INTERVAL_DAYS` below) — that averages **≈ $0.07/day
+(≈ $2/month)**; set the interval to 1 for daily posting (~$6/month) whenever
+you want to ramp back up.
 
 ---
 
@@ -45,8 +49,8 @@ create the project, apply the schema, seed 60 recipes.
 3. The file is idempotent — re-running it is safe.
 
 It creates two tables: `recipes` (one row per generated recipe, with a
-`status` column) and `daily_posts` (one row per calendar date the cron
-processes).
+`status` column) and `daily_posts` (one row per posting attempt — non-posting
+days write none; see step 4).
 
 ### 1.3 Find your two Supabase credentials
 
@@ -120,10 +124,12 @@ and `daily_posts` is **0 rows** (it only fills in as the cron runs). There are
 no `listed` recipes yet. If you ever re-run the seed later, `listed` counts
 will appear and grow — that is expected.
 
-The daily cron draws the **oldest** `draft_ready` recipe first, so the very
-first posting will be the first seeded recipe (dated 2026-01-01). The queue
-holds ~30 days of runway; when it drops below 10, the analytics dashboard's
-inventory alert goes off (see the README's dashboard section).
+The cron draws the **oldest** `draft_ready` recipe first (on posting days
+only — see step 4.1), so the very first posting will be the first seeded
+recipe (dated 2026-01-01). The queue of 30 holds **~90 days of runway at the
+default 3-day cadence** (~30 days if you set `FRAGBOT_POST_INTERVAL_DAYS=1`);
+when it drops below 10, the analytics dashboard's inventory alert goes off
+(see the README's dashboard section).
 
 ---
 
@@ -223,9 +229,19 @@ Optional secrets (skip unless you want the behaviour):
 |---|---|---|
 | `ETSY_TAXONOMY_ID` | Pins the listing category to a fixed Etsy category id | **Recommended** — add after your first live run (step 5.5) |
 | `POSTGRES_URL` | Direct-SQL database backend instead of the REST route | Only if you prefer the `POSTGRES_URL` alternative from 1.3 |
-| `RESEND_API_KEY` + `ETSY_NOTIFY_TO` | Sends you a daily notification email with the new listing URL | Optional (the URL is always logged regardless) |
+| `RESEND_API_KEY` + `ETSY_NOTIFY_TO` | Sends you a notification email with each new listing URL (posting days only; the URL is always logged regardless) | Optional |
 | `ETSY_SHIPPING_PROFILE_ID` | Attaches a shipping profile | Not needed — the listings are digital downloads |
 | `ETSY_NOTIFY_FROM` | Custom sender for the notification email | Only if you want a non-default sender; note the workflow env doesn't pass it yet, so add one line to the workflow if you do |
+
+> **Posting cadence (optional, no code changes):** set `FRAGBOT_POST_INTERVAL_DAYS`
+> as a repository **variable** (Settings → Secrets and variables → Actions →
+> Variables, name `FRAGBOT_POST_INTERVAL_DAYS`, value `3`) or as a secret with
+> the same name. It is the number of days between postings: `1` = every day
+> (the old behaviour), `2` = every 2 days, `3` = every 3 days (default when
+> unset). The workflow still triggers **daily at 08:00 UTC**; on non-posting
+> days the script logs `not a posting day (interval N) — nothing to do` and
+> exits 0 — a green run that writes nothing (no recipe consumed, no
+> `daily_posts` row, no listing fee charged).
 
 > The code also reads `ETSY_SHARED_SECRET` (optional extra API header) and
 > `FRAGBOT_BRAND` (watermark text) if you ever set them locally; neither is
@@ -242,8 +258,11 @@ end to end.
 
 The file `.github/workflows/daily-post.yml` is committed on `main` (you can
 see it at GitHub → *Actions* and in the repo tree at `.github/workflows/`).
-It runs on a schedule — **08:00 UTC every day** — and can also be triggered
-manually.
+It triggers on a schedule — **08:00 UTC every day** — and can also be
+triggered manually. The script inside enforces the posting cadence: posting
+days are those where `(today − 2026-01-01).days % FRAGBOT_POST_INTERVAL_DAYS
+== 0` (default interval **3** → about every 3 days; see step 3). The cron
+expression itself never changes — you only change the interval variable.
 
 ### 4.2 Run it manually
 
@@ -253,10 +272,11 @@ manually.
    workflow**.
 4. Click the new run to watch it live.
 
-### 4.3 What a successful run looks like
+### 4.3 What a run looks like
 
-The run finishes **green** with exit code 0. The log shows each stage, ending
-with lines like:
+**On a posting day** the run finishes **green** with exit code 0. The log
+shows the cadence decision (`posting day (interval 3) — would post` for
+dry-runs) and each stage, ending with lines like:
 
 ```
 INFO ... rendered 5 listing images + PDF at ...
@@ -271,6 +291,11 @@ run for inspection.
 **On Etsy** the result is one **active** digital-download listing: title,
 pricing tags, 5 images, and the recipe PDF attached as the digital file.
 
+**On a NON-posting day** the run is still **green** (exit 0) but does
+nothing: the log shows `not a posting day (interval 3) — nothing to do`,
+no recipe is consumed, no `daily_posts` row is written, and Etsy is never
+called — so no `$0.20` listing fee is charged.
+
 ### 4.4 What a failed run looks like (and the safety net)
 
 A failed run shows a **red ✗** (non-zero exit — the workflow is deliberately
@@ -278,7 +303,7 @@ configured to fail loudly rather than silently skip). When that happens:
 
 - the recipe **stays `draft_ready`** — it is never marked `listed`;
 - the day is recorded as `failed` in the `daily_posts` table;
-- the **next run retries the same recipe** — idempotent, no dupes;
+- the **next posting day retries the same recipe** — idempotent, no dupes;
 - **no partial listing goes live**: the listing is only activated after all 5
   images are uploaded. If a failure happens *after* the draft was created but
   before activation, an **inactive draft** is left on Etsy for manual cleanup
@@ -305,13 +330,18 @@ export SUPABASE_SERVICE_ROLE_KEY="eyJ..."
 export ETSY_KEYSTRING="<keystring>"
 export ETSY_SHOP_ID="<numeric shop id>"
 export ETSY_REFRESH_TOKEN="<token from step 2.3>"
+export FRAGBOT_POST_INTERVAL_DAYS="3"    # optional — posting cadence in days
 python3 scripts/daily_post.py --log-file logs/daily-post.log
 ```
 
-Either way, the first run posts the **oldest** `draft_ready` recipe — the
-first recipe of the seed. The script renders its 5 listing images and the
-recipe-card PDF, creates the listing, uploads the images, activates the
-listing, attaches the PDF, and records the post.
+Either way, on a posting day the run posts the **oldest** `draft_ready`
+recipe — the first recipe of the seed. The script renders its 5 listing
+images and the recipe-card PDF, creates the listing, uploads the images,
+activates the listing, attaches the PDF, and records the post. If you run on
+a non-posting day you'll see `not a posting day (interval N) — nothing to
+do` and exit 0 — that's expected (step 4.3); use
+`FRAGBOT_POST_INTERVAL_DAYS=1` temporarily if you want the very next run to
+post.
 
 No credentials handy but want to see the flow? `python3 scripts/daily_post.py
 --dry-run` renders everything and prints the exact payloads Etsy would receive
@@ -359,6 +389,7 @@ the Actions run page → the failed step → the **daily-post-logs** artifact
 | Taxonomy error, or listing lands in a wrong/generic category | Auto-lookup found no good match (falls back to 563) | Set `ETSY_TAXONOMY_ID` to the numeric category you want (step 5.3) — it overrides everything. |
 | `could not configure the store` / `no Supabase credentials found` | Secrets missing or mis-named (exit code 2) | Confirm `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set with the **exact** names in step 3, and that the schema from step 1.2 was applied. |
 | `no draft_ready recipe in the queue — nothing to do` (run is green) | Seed hasn't run, or the queue is drained | Run `python3 seed_recipes.py` (step 1.4) and confirm 30 `draft_ready` rows (step 1.5). |
+| `not a posting day (interval 3) — nothing to do` (run is green, nothing posted) | Normal — today is between posting days at the current cadence | Nothing to fix: this is the intended behaviour (step 4.3). The next posting day happens automatically. To post *today* instead, temporarily set `FRAGBOT_POST_INTERVAL_DAYS=1` in the workflow env (step 3). |
 | Inactive draft left on Etsy after a failed run | Failure happened after draft creation, before activation | The listing id is in the log; delete the draft manually from Shop Manager. It was never activated, so no customer saw it. |
 
 ---
@@ -374,8 +405,12 @@ the Actions run page → the failed step → the **daily-post-logs** artifact
 - [ ] Manual workflow run (Actions → daily-post → Run workflow) is green
 - [ ] One real listing verified on Etsy: page, 5 images, PDF download, price, tags
 - [ ] `ETSY_TAXONOMY_ID` pinned after the first live run
+- [ ] (Optional) `FRAGBOT_POST_INTERVAL_DAYS` repository variable set — e.g. `3`
 
-After go-live the pipeline posts one new listing every day at 08:00 UTC
-automatically. The repo also already ships a private analytics dashboard
-(`dashboard/`, see README) and a social promotion engine (`fragbot/promo/`) —
-both are ready to adopt once live Etsy data flows.
+After go-live the pipeline posts one new listing **every 3 days by default**
+(configurable via `FRAGBOT_POST_INTERVAL_DAYS`; the workflow still triggers
+daily at 08:00 UTC and skips non-posting days with a green, no-op run), at
+~$0.07/day average in Etsy listing fees. The repo also already ships a
+private analytics dashboard (`dashboard/`, see README) and a social
+promotion engine (`fragbot/promo/`) — both are ready to adopt once live
+Etsy data flows.

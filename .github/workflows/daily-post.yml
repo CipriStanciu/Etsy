@@ -1,8 +1,18 @@
 # Fragrance Bot — daily Etsy posting cron (8:00 AM UTC, every day).
 #
-# Draws the oldest draft_ready recipe from Supabase, renders its 5 listing
-# images + recipe-card PDF, creates a digital-download listing on Etsy,
-# uploads everything, activates it and records the post. See
+# The workflow triggers DAILY; the posting cadence is config-driven inside
+# scripts/daily_post.py: it posts when (today - 2026-01-01).days %
+# FRAGBOT_POST_INTERVAL_DAYS == 0. Default interval is 3 (one listing every
+# 3 days; ~$0.20 x 10/month ≈ $2/month in Etsy fees). On a non-posting day
+# the script logs "not a posting day (interval N) — nothing to do" and exits
+# 0 — the run is green and NOTHING is written (no recipe consumed, no
+# daily_posts row, no listing). Set FRAGBOT_POST_INTERVAL_DAYS to 1 (every
+# day), 2, 3, ... as a repository variable or secret to change the cadence
+# without code changes.
+#
+# On a posting day: draws the oldest draft_ready recipe from Supabase,
+# renders its 5 listing images + recipe-card PDF, creates a digital-download
+# listing on Etsy, uploads everything, activates it and records the post. See
 # scripts/daily_post.py and the README's "Etsy posting pipeline" section.
 #
 # Secrets required (GitHub -> Settings -> Secrets and variables -> Actions):
@@ -12,15 +22,16 @@
 #   SUPABASE_URL                 + SUPABASE_SERVICE_ROLE_KEY   (REST backend)
 #   POSTGRES_URL                 (alternative direct-SQL backend)
 # Optional:
+#   FRAGBOT_POST_INTERVAL_DAYS   posting cadence in days (default 3; 1 = daily)
 #   ETSY_TAXONOMY_ID             pin the seller-taxonomy node (recommended)
 #   ETSY_SHIPPING_PROFILE_ID     attach a shipping profile (not needed for
 #                                digital downloads)
-#   RESEND_API_KEY + ETSY_NOTIFY_TO   daily notification email
+#   RESEND_API_KEY + ETSY_NOTIFY_TO   notification email on posting days
 name: daily-post
 
 on:
   schedule:
-    - cron: '0 8 * * *'   # 08:00 UTC every day
+    - cron: '0 8 * * *'   # 08:00 UTC every day (script skips non-posting days)
   workflow_dispatch: {}   # manual trigger from the Actions tab
 
 permissions:
@@ -37,6 +48,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+      FRAGBOT_POST_INTERVAL_DAYS: ${{ vars.FRAGBOT_POST_INTERVAL_DAYS }}
       ETSY_TAXONOMY_ID: ${{ secrets.ETSY_TAXONOMY_ID }}
       ETSY_SHIPPING_PROFILE_ID: ${{ secrets.ETSY_SHIPPING_PROFILE_ID }}
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
@@ -56,9 +68,11 @@ jobs:
 
       - name: Run the daily Etsy posting pipeline
         run: python3 scripts/daily_post.py --log-file logs/daily-post.log
-        # Non-zero exit (owner spec) makes the run FAIL visibly in the
-        # Actions UI; the recipe is left draft_ready and retried the next
-        # day. Logs are stored as a workflow artifact for diagnosis.
+        # Exits 0 on non-posting days (cadence guard, nothing written). On a
+        # real Etsy error the non-zero exit (owner spec) makes the run FAIL
+        # visibly in the Actions UI; the recipe is left draft_ready and
+        # retried on the next posting day. Logs are stored as a workflow
+        # artifact for diagnosis.
         continue-on-error: false
 
       - name: Upload logs
