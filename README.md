@@ -117,8 +117,10 @@ Exactly the fields below (plus the two sanctioned extensions `theme` and
   cycle ≈ 17.5 years; driven by a coprime stride over the date ordinal).
 - `full_title` — ≤ 140 chars, front-loaded per the SEO keyword engine:
   `DIY <Category-heading> Recipe | <Heart> & <Base> <Form> | <Benefit/Recipient> | Digital Download`
-  (e.g. `DIY Perfume Making Kit Recipe | Lavender & Frankincense Roll-On |
-  Natural Gift for Her | Digital Download`). The invented recipe name is
+  (e.g. `DIY Perfume Making Recipe | Lavender & Frankincense Roll-On |
+  Natural Gift for Her | Digital Download`). No title head carries "Kit"
+  ("kit" searches are physical-intent; the listing sells a PDF recipe card).
+  The invented recipe name is
   intentionally not in the title; the heart+base note pair is never dropped
   (the trim cascade removes the benefit/format tails first).
 - `slug` — `<name>-diy-<category>-recipe`, URL-safe.
@@ -139,10 +141,15 @@ Exactly the fields below (plus the two sanctioned extensions `theme` and
   `christmas gift`, `mothers day gift`) else a recipient tag (`gift for
   her/him`, `hostess gift`, `self care gift`), a season tag in-season
   (`fall candle`, `summer scent`, `cozy scent`, ...), and a benefit tag
-  (`beginner friendly`, `calming blend`, ...). Product-claim tags
-  (`long lasting`, `non toxic`, `stress relief`, `sleep spray`, ...) are
-  gated behind `FRAGBOT_ALLOW_CLAIMS` (default off — owner sign-off
-  required); `vegan` is never tagged (solid perfume uses beeswax).
+  (`beginner friendly`, `calming blend`, ...). No "kit" / "oil" phrase may
+  occupy a tag slot (physical-intent mismatch with a PDF; `essential oil
+  blend` / `essential oil recipe` stay — they are material terms, not
+  products). Claim tags: the owner-approved SOFT claims (`long lasting`,
+  `calming blend`) ship by default — `FRAGBOT_ALLOW_CLAIMS` defaults ON and
+  only an explicit `0`/`false`/`off`/`no` turns it off. Hard-constrained
+  terms (`non toxic`, `cruelty free`, `stress relief`, `sleep spray`, any
+  medical claim) are never emitted automatically; `vegan` is never tagged
+  (solid perfume uses beeswax).
 - `theme` — 7-day content theme; `holiday` — `null` or a named holiday
 
 ## Generation rules (owner's spec) — how they're implemented
@@ -180,8 +187,9 @@ Exactly the fields below (plus the two sanctioned extensions `theme` and
    9 core + 4 rotating slots driven by holiday/season/theme/actual blend
    notes; description hook opens with "Make your own <label> at home" plus
    season + beginner + recipient keywords; image alt text = category + note
-   pair + "digital download". Claim terms are gated behind
-   `FRAGBOT_ALLOW_CLAIMS` (default off).
+   pair + "digital download". Owner-approved soft claim tags (`long lasting`,
+   `calming blend`) ship by default; `FRAGBOT_ALLOW_CLAIMS=0` disables them.
+   Hard-constrained claim terms are never emitted automatically.
 9. **Determinism** — `random.Random(f"{date}|{seq}")`; same date + same seq →
    identical JSON. Consecutive dates differ by construction (name permutation +
    rotating ingredient windows).

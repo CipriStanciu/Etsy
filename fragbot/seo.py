@@ -22,12 +22,17 @@ upgrade, see /home/team/shared/seo/keyword-gap-analysis.md):
   * image alt text = category + note pair + "digital download" (Etsy's 500
     char budget is no longer wasted on the invented name).
 
-Claim guardrail (analyst §5, owner has NOT signed off): product-claim tags
-("long lasting", "non toxic", "cruelty free", "stress relief", "sleep spray")
-are NOT shipped by default. They only replace the benefit slot when
-``FRAGBOT_ALLOW_CLAIMS`` is truthy. Soft truthful phrasing ("calming",
-"natural", "beginner friendly") ships unconditionally. Solid-perfume never
-tags "vegan" (it uses beeswax).
+Claim guardrail (analyst §5, owner policy ratified in the business plan
+rev 8, 2026-09-16): the owner APPROVED the soft truthful claims, so
+``FRAGBOT_ALLOW_CLAIMS`` now defaults to ON — the claim alternates in
+``CLAIM_TAG`` replace the benefit slot unless the env var is explicitly set
+to a falsy value (``0``/``false``/``off``/``no``). Only owner-approved soft
+terms are in that pool ("long lasting" on the skin/candle products,
+"calming blend" on the home-fragrance products). Hard-constrained terms
+("vegan", "non toxic", "cruelty free", "stress relief", "sleep spray", any
+medical/curative claim) are NEVER emitted automatically, gate or no gate.
+Soft truthful phrasing ("calming", "natural", "beginner friendly") ships
+unconditionally. Solid-perfume never tags "vegan" (it uses beeswax).
 """
 
 from __future__ import annotations
@@ -44,6 +49,9 @@ from . import themes
 # Tag pools (gap-analysis §3.1-3.6 [REC] sets; char-count-verified <= 20).
 # ---------------------------------------------------------------------------
 # 9 core tags per category — static, high-volume category/form/format terms.
+# No "kit" / "oil" phrase may occupy a tag slot (analyst DO-NOT-USE: those are
+# physical-intent searches — the buyer wants a kit/oil delivered, not a PDF
+# recipe card). See verify.py's kit/oil slot check.
 CATEGORY_CORE_TAGS: Dict[str, List[str]] = {
     "perfume": [
         "diy perfume making",
@@ -51,7 +59,7 @@ CATEGORY_CORE_TAGS: Dict[str, List[str]] = {
         "essential oil blend",
         "natural perfume",
         "roll on perfume",
-        "perfume making kit",
+        "how to make perfume",
         "homemade perfume",
         "essential oil recipe",
         "digital download",
@@ -70,9 +78,12 @@ CATEGORY_CORE_TAGS: Dict[str, List[str]] = {
     "candle": [
         "candle making",
         "soy candle recipe",
-        "candle making kit",
-        "diy candle making",
         "homemade candle",
+        "diy candle making",
+        # "candle making kit" (physical-intent) removed; the freed slot holds
+        # "homemade candle", so the duplicate slot the pool already owned takes
+        # the analyst's candle [REC] term "handmade gift" to keep 9 core tags.
+        "handmade gift",
         "essential oil blend",
         "fragrance recipe",
         "home fragrance",
@@ -82,7 +93,7 @@ CATEGORY_CORE_TAGS: Dict[str, List[str]] = {
         "diy reed diffuser",
         "reed diffuser",
         "diffuser recipe",
-        "reed diffuser oil",
+        "home scent",
         "reed diffuser refill",
         "homemade diffuser",
         "home fragrance",
@@ -174,21 +185,35 @@ THEME_BENEFIT_OVERRIDE: Dict[str, Dict[str, str]] = {
     "perfume": {"Wellness Wednesday": "calming blend"},
 }
 
-# Claim-gated alternates — only used when FRAGBOT_ALLOW_CLAIMS is truthy
-# (owner sign-off required; NOT shipped by default).
+# Claim alternates — owner-approved SOFT truthful terms only (business plan
+# rev 8, 2026-09-16). These replace the benefit slot by default
+# (FRAGBOT_ALLOW_CLAIMS defaults ON; see _claims_allowed()).
+#
+# Hard-constrained per the plan and therefore NEVER in this automatic pool:
+# "non toxic", "cruelty free", "vegan", "stress relief", "sleep spray" and any
+# medical/curative claim. reed_diffuser / room_spray intentionally fall back to
+# the softer "calming blend" instead of "stress relief" / "non toxic".
 CLAIM_TAG: Dict[str, str] = {
     "perfume": "long lasting",
     "cologne": "long lasting",
     "candle": "long lasting",
-    "reed_diffuser": "stress relief",
-    "room_spray": "non toxic",
+    "reed_diffuser": "calming blend",
+    "room_spray": "calming blend",
     "solid_perfume": "long lasting",
 }
 CLAIMS_ENV = "FRAGBOT_ALLOW_CLAIMS"
+_CLAIMS_FALSY = ("0", "false", "off", "no")
 
 
 def _claims_allowed() -> bool:
-    return os.environ.get(CLAIMS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    """True unless ``FRAGBOT_ALLOW_CLAIMS`` is explicitly falsy.
+
+    Owner approved the soft truthful claims on 2026-09-16 (business plan rev
+    8), so the gate is ON by default: unset -> True, "1"/"true"/"yes"/"on" ->
+    True, and only an explicit "0"/"false"/"off"/"no" turns it off.
+    """
+    raw = os.environ.get(CLAIMS_ENV, "").strip().lower()
+    return raw not in _CLAIMS_FALSY
 
 
 def slugify(text: str) -> str:
@@ -226,7 +251,9 @@ def key_note_pair(scent_profile: dict) -> str:
 # benefit/recipient, brand name dropped.
 # ---------------------------------------------------------------------------
 TITLE_HEAD: Dict[str, str] = {
-    "perfume": "DIY Perfume Making Kit Recipe",
+    # No "Kit" in any head: "kit" searches are physical-intent (analyst
+    # DO-NOT-USE), so perfume reads "DIY Perfume Making Recipe".
+    "perfume": "DIY Perfume Making Recipe",
     "cologne": "DIY Cologne Recipe for Men",
     "candle": "DIY Candle Making Recipe",
     "reed_diffuser": "DIY Reed Diffuser Refill Recipe",
@@ -361,7 +388,8 @@ def _rotating_tags(category: str, d: date, scent_profile: dict) -> List[str]:
         else _GENERIC_SEASON_TAGS[d.month]
     )
 
-    # 4. Benefit slot: theme override for perfume; claim-gated alternates.
+    # 4. Benefit slot: theme override for perfume; owner-approved soft claim
+    #    alternates (gate ON by default, disabled with FRAGBOT_ALLOW_CLAIMS=0).
     theme = themes.DAY_THEMES[d.weekday()]
     benefit = THEME_BENEFIT_OVERRIDE.get(category, {}).get(theme, BENEFIT_TAG[category])
     if _claims_allowed():

@@ -25,8 +25,10 @@ Checks (spec rules 1-10):
      their windows; season tags in-season; titles front-load the category
      phrase, keep the heart+base note pair and end with "Digital Download";
      image alt text = category + note pair + digital download; no
-     unapproved claim terms in shipped copy (they are gated behind
-     FRAGBOT_ALLOW_CLAIMS, which the gate check proves unlocks them).
+     hard-constrained claim terms in shipped copy (the claim gate is ON by
+     default per the owner's rev-8 policy, so shipped copy carries only the
+     approved soft claims "long lasting" / "calming blend"); no "kit" / "oil"
+     phrase in any tag slot (physical-intent guard).
 """
 
 from __future__ import annotations
@@ -281,16 +283,30 @@ def main() -> int:
                       6: "summer scent", 7: "summer scent", 8: "summer scent",
                       9: "fall scent", 10: "fall scent", 11: "fall scent"}
     CLAIMS_ENV = "FRAGBOT_ALLOW_CLAIMS"
-    CLAIM_TERMS = ("long lasting", "non toxic", "cruelty free", "stress relief",
-                   "sleep spray", "vegan")   # vegan never tags (beeswax)
+    # Owner policy (business plan rev 8, 2026-09-16): the soft truthful claims
+    # are APPROVED and ship with the gate ON by default. The hard-constrained
+    # terms below must never reach shipped copy, gate or no gate.
+    APPROVED_SOFT_CLAIMS = ("long lasting", "calming blend")
+    BANNED_CLAIM_TERMS = ("non toxic", "cruelty free", "stress relief",
+                          "sleep spray", "vegan")   # vegan never tags (beeswax)
+    # Analyst DO-NOT-USE: "kit"/"oil" phrases are physical-intent searches that
+    # a PDF recipe card cannot satisfy, so they may not occupy a tag slot.
+    # "kit" is banned outright; "oil" is banned except inside the analyst's
+    # KEPT material phrase "essential oil ..." (Tier 1: "essential oil blend"
+    # is the strongest cross-category exact phrase and stays).
+    KIT_TAG_TERMS = ("kit",)
+    OIL_TAG_TERMS = ("oil",)
+    OIL_ALLOWED_SUBSTRING = "essential oil"
 
-    claims_was = os.environ.pop(CLAIMS_ENV, None)   # shipped default = claims OFF
+    claims_was = os.environ.pop(CLAIMS_ENV, None)   # unset = default = claims ON
     note_tag_ok = holiday_tag_ok = outside_holiday_tag_ok = season_tag_ok = True
     title_ok = True
     title_bad = []
     alt_ok = True
     claim_free_ok = True
-    claim_hits = []
+    banned_hits = []
+    soft_hits = set()
+    kit_oil_hits = []
     for d, r in zip(days, recipes):
         sp = r["scent_profile"]
         notes = [n.lower() for n in sp["top_notes"] + sp["heart_notes"] + sp["base_notes"]]
@@ -318,10 +334,18 @@ def main() -> int:
             title_ok = False
             title_bad.append((d.isoformat(), t))
         text = f"{t} {' '.join(r['tags'])} {r['description_long']}".lower()
-        for term in CLAIM_TERMS:
+        for term in BANNED_CLAIM_TERMS:
             if term in text:
                 claim_free_ok = False
-                claim_hits.append((d.isoformat(), term))
+                banned_hits.append((d.isoformat(), term))
+        soft_hits.update(term for term in APPROVED_SOFT_CLAIMS if term in text)
+        for tag in r["tags"]:
+            bad = any(k in tag for k in KIT_TAG_TERMS) or (
+                any(o in tag for o in OIL_TAG_TERMS)
+                and OIL_ALLOWED_SUBSTRING not in tag
+            )
+            if bad:
+                kit_oil_hits.append((d.isoformat(), tag))
         alt = make_image_alt(r["category"], sp)
         if not (len(alt) <= 500 and r["category"].replace("_", " ") in alt.lower()
                 and pair.lower() in alt.lower() and "digital download" in alt.lower()):
@@ -333,19 +357,34 @@ def main() -> int:
     check(season_tag_ok, "season tags appear in-season (fall candle, cozy scent, ...)")
     check(title_ok, "title front-loads category, keeps the note pair, ends Digital Download",
           f"{title_bad[:3]}")
-    check(claim_free_ok, "no unapproved claim terms in shipped copy (default off)",
-          f"{claim_hits[:3]}")
+    check(claim_free_ok, "default copy carries no hard-constrained claim term "
+          "(non toxic / stress relief / sleep spray / vegan)", f"{banned_hits[:3]}")
+    check(soft_hits == set(APPROVED_SOFT_CLAIMS),
+          "claim gate ON by default: approved soft claims ship (long lasting + calming blend)",
+          f"(got {sorted(soft_hits)})")
+    check(not kit_oil_hits, "no 'kit'/'oil' phrase in any tag slot (physical-intent guard)",
+          f"{kit_oil_hits[:3]}")
     check(alt_ok, "image alt text has category + note pair + digital download (<= 500 chars)")
-    # claim gate must actually unlock the alternates when the owner opts in
-    os.environ[CLAIMS_ENV] = "1"
-    gated = generate_recipe(date(2026, 1, 5))   # a Monday -> perfume
+    # gate behaviour: default (unset or blank) ON, truthy ON, explicit falsy OFF
+    probe = date(2026, 1, 5)   # a Monday -> perfume ("long lasting" alternate)
+
+    def _probe_tags(value):
+        os.environ[CLAIMS_ENV] = value
+        tags = generate_recipe(probe)["tags"]
+        assert len(tags) == 13 and len(set(tags)) == 13, tags
+        return tags
+
+    off_tags, on_tags, blank_tags = _probe_tags("0"), _probe_tags("1"), _probe_tags("")
     if claims_was is None:
         os.environ.pop(CLAIMS_ENV, None)
     else:
         os.environ[CLAIMS_ENV] = claims_was
-    gated_ok = any(t in CLAIM_TERMS for t in gated["tags"])
-    check(gated_ok, "FRAGBOT_ALLOW_CLAIMS=1 unlocks claim tags (gated, default unchanged)",
-          f"(got {[t for t in gated['tags'] if t in CLAIM_TERMS]})")
+    gate_ok = ("long lasting" not in off_tags
+               and "long lasting" in on_tags
+               and "long lasting" in blank_tags
+               and "beginner friendly" in off_tags)
+    check(gate_ok, "FRAGBOT_ALLOW_CLAIMS: unset/blank/1 = ON, explicit 0 = OFF (13 tags either way)",
+          f"(off={off_tags[-1]!r} on={on_tags[-1]!r})")
 
     # -----------------------------------------------------------------------
     print("=" * 78)
