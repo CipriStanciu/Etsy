@@ -421,7 +421,7 @@ It creates:
 | table | purpose | notes |
 |---|---|---|
 | `recipes` | one row per generated recipe | `slug` UNIQUE; `status` in `draft` / `draft_ready` / `listed` / `archived`; index on `(status, created_at)` for the daily queue |
-| `daily_posts` | one row per calendar date the cron processes | `date` PK; `recipe_id` FK → `recipes.id`; `status` in `scheduled` / `posted` / `skipped` / `failed`; views/favorites/sales counters |
+| `daily_posts` | one row per posting attempt (non-posting days write none) | `date` PK; `recipe_id` FK → `recipes.id`; `status` in `scheduled` / `posted` / `skipped` / `failed`; views/favorites/sales counters |
 
 `status` semantics: `draft` = in the library but not queued; `draft_ready` =
 in the daily posting queue (the cron draws these oldest-first); `listed` =
@@ -523,8 +523,13 @@ done once the real credentials land in Secrets.
 
 Daily automation that turns the next `draft_ready` recipe in the Supabase
 library into a live Etsy digital-download listing: 5 SEO listing images, a
-recipe-card PDF, activation, and a store/email record — every day at 08:00
-UTC via GitHub Actions.
+recipe-card PDF, activation, and a store/email record. The GitHub Actions
+workflow triggers **daily at 08:00 UTC**, but the script only posts on
+**posting days** — every **3 days by default**, configurable via
+`FRAGBOT_POST_INTERVAL_DAYS` (set 1 for every day, 2 for every 2 days, etc.).
+On non-posting days it logs `not a posting day (interval N) — nothing to do`
+and exits 0 (green run, nothing written) so the cadence can be changed
+without touching code or the cron.
 
 ## 1. Create the Etsy app (one-time, ~5 min)
 
@@ -570,6 +575,7 @@ python3 scripts/etsy_oauth.py
 | `ETSY_SHIPPING_PROFILE_ID` | optional | Shop Manager → Shipping profiles | attach profile |
 | `RESEND_API_KEY` + `ETSY_NOTIFY_TO` | optional | resend.com | daily notification email |
 | `ETSY_NOTIFY_FROM` | optional | your verified Resend domain | sender address |
+| `FRAGBOT_POST_INTERVAL_DAYS` | optional (default `3`) | any whole number ≥ 1 | posting cadence in days: 1 = every day, 2 = every 2 days, 3 = every 3 days… (workflow still triggers daily; non-posting days exit 0 and write nothing) |
 
 Taxonomy: by default the client fetches Etsy's seller taxonomy and picks the
 deepest node matching the DIY/download keywords (Craft Supplies & Tools
@@ -589,8 +595,16 @@ file upload, activation, getListing) — nothing touches the network.
 ## 5. Daily cron (GitHub Actions)
 
 `.github/workflows/daily-post.yml` runs `python3 scripts/daily_post.py` on
-`0 8 * * *` (UTC), with `workflow_dispatch` for manual runs. Order of
-operations per run:
+`0 8 * * *` (UTC) **every day**, with `workflow_dispatch` for manual runs.
+The script itself enforces the posting cadence: today is a posting day iff
+`(today - 2026-01-01).days % FRAGBOT_POST_INTERVAL_DAYS == 0` (fixed anchor
+= the seed start date, so the cadence is deterministic and independent of
+the cron day-of-month; default interval 3). On a non-posting day the script
+logs `not a posting day (interval 3) — nothing to do`, exits 0 and touches
+nothing — no recipe consumed, no `daily_posts` row, no Etsy call. Set
+`FRAGBOT_POST_INTERVAL_DAYS` as a repository variable or secret (1, 2, 3,
+…) to change the cadence without any code change. Order of operations on a
+posting day:
 
 ```
 get_next_draft_recipe → render 5 images → render PDF
@@ -617,10 +631,12 @@ Notes on the API surface (checked against Etsy's official OpenAPI v3 spec,
 
 **Failure semantics (owner spec):** on ANY Etsy API error the run exits
 non-zero, the recipe stays `draft_ready` (never `mark_listed`), the day is
-recorded `failed` in `daily_posts`, and the next run retries the same recipe.
-Idempotent by construction: only `draft_ready` recipes with no `listing_id`
-are ever picked. If a failure happens *after* the draft was created, the
-orphaned draft stays on Etsy for manual cleanup and its id is logged.
+recorded `failed` in `daily_posts`, and the next **posting day** retries the
+same recipe. Idempotent by construction: only `draft_ready` recipes with no
+`listing_id` are ever picked. If a failure happens *after* the draft was
+created, the orphaned draft stays on Etsy for manual cleanup and its id is
+logged. Non-posting days are NOT failures: they exit 0 before anything is
+touched, so the skip-day retry backlog only ever moves on posting days.
 
 **Token rotation:** after each OAuth refresh the NEW refresh token is
 persisted into the `etsy_tokens` table (created lazily via
@@ -631,7 +647,7 @@ Supabase layer is unreachable, a warning is logged and the run continues.
 ## 6. Verification (no live Etsy credentials)
 
 ```bash
-python3 verify_etsy.py            # 53 checks vs. a local mock Etsy API
+python3 verify_etsy.py            # 67 checks vs. a local mock Etsy API
 python3 verify.py                 # recipe engine regression (55/55)
 python3 verify_supabase.py        # storage regression (24/24)
 ```
@@ -719,7 +735,8 @@ off), plus the standalone CLI above as the primary interface. Reasoning:
 promo assets are not consumed by Etsy posting and need no Etsy credentials,
 so generating them belongs on the side of the posting flow — a separate
 byproduct, not a posting step. The flag keeps the pipeline's behaviour (and
-its 53 mock checks) unchanged unless asked for:
+its mock checks — including the posting-cadence rule) unchanged unless
+asked for:
 
 ```bash
 python3 scripts/daily_post.py --promo --work-dir /tmp/post  # adds /tmp/post/promo/*

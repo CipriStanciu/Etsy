@@ -28,6 +28,12 @@ and an in-memory StubStore; NO live Etsy credentials exist or are used:
 The same checks run against scripts/etsy_oauth.py's authorize-URL builder
 (pure function) to make sure the one-time owner flow builds a spec-shaped
 URL (PKCE S256, scopes, state, redirect_uri).
+
+Check 0 covers the posting-cadence rule (FRAGBOT_POST_INTERVAL_DAYS, default
+3): the anchor math, the env default/override/validation, and — critically —
+that a NON-posting day writes nothing anywhere (store untouched, no assets,
+status=skip / dry_run_skip). The other tests pin the interval to 1 so they
+are independent of the real calendar date.
 """
 from __future__ import annotations
 
@@ -176,6 +182,92 @@ def load_example_recipe() -> Dict[str, Any]:
     if problems:
         raise RuntimeError(f"example recipe invalid: {problems}")
     return recipe
+
+
+# ---------------------------------------------------------------------------
+# 0. Posting-cadence rule (pure logic: (today - anchor).days % interval == 0)
+# ---------------------------------------------------------------------------
+def _interval_env(value: str, restore: Optional[str]) -> int:
+    """Set FRAGBOT_POST_INTERVAL_DAYS, run the reader, restore the env."""
+    if value is None:
+        os.environ.pop("FRAGBOT_POST_INTERVAL_DAYS", None)
+    else:
+        os.environ["FRAGBOT_POST_INTERVAL_DAYS"] = value
+    try:
+        from scripts.daily_post import posting_interval_days  # noqa: PLC0415
+        return posting_interval_days()
+    finally:
+        if restore is None:
+            os.environ.pop("FRAGBOT_POST_INTERVAL_DAYS", None)
+        else:
+            os.environ["FRAGBOT_POST_INTERVAL_DAYS"] = restore
+
+
+def test_posting_day_rule(work: Path) -> None:
+    print("\n0. Posting-cadence rule (FRAGBOT_POST_INTERVAL_DAYS, default 3)")
+    from scripts.daily_post import (  # noqa: PLC0415
+        is_posting_day,
+        run_daily_post,
+    )
+
+    # pure anchor math
+    check("anchor 2026-01-01 is a posting day (index 0 % 3 == 0)",
+          is_posting_day(date(2026, 1, 1), interval=3))
+    check("2026-01-02 is NOT a posting day (index 1 % 3 != 0)",
+          not is_posting_day(date(2026, 1, 2), interval=3))
+    check("2026-01-04 is a posting day (index 3 % 3 == 0)",
+          is_posting_day(date(2026, 1, 4), interval=3))
+    check("interval=1 makes every day a posting day",
+          is_posting_day(date(2026, 1, 2), interval=1))
+
+    # env config: default 3 when unset; override respected; bad value refused
+    saved = os.environ.get("FRAGBOT_POST_INTERVAL_DAYS")
+    try:
+        check("interval default is 3 (FRAGBOT_POST_INTERVAL_DAYS unset)",
+              _interval_env(None, saved) == 3, f"got {_interval_env(None, saved)}")
+    except Exception:  # noqa: BLE001
+        check("interval default is 3 (FRAGBOT_POST_INTERVAL_DAYS unset)", False)
+    check("interval env override respected (FRAGBOT_POST_INTERVAL_DAYS=7)",
+          _interval_env("7", saved) == 7)
+    check("invalid interval value refused (non-integer)",
+          _raises(_interval_env, "abc", saved))
+    check("invalid interval value refused (0)",
+          _raises(_interval_env, "0", saved))
+
+    # end-to-end safety: a non-posting day must write NOTHING anywhere —
+    # no recipe consumed, no daily_posts rows, no assets, no listing.
+    store = seeded_store(load_example_recipe())
+    snapshot = {s: dict(r) for s, r in store.recipes.items()}
+    summary = run_daily_post(store, work_dir=work / "skip-live",
+                             interval=3, today=date(2026, 1, 2))
+    check("live run on a non-posting day returns status=skip",
+          summary.get("status") == "skip", str(summary.get("status")))
+    row = next(iter(store.recipes.values()))
+    check("skip: recipe stays draft_ready with no listing_id",
+          row["status"] == "draft_ready" and row["listing_id"] is None,
+          f"status={row['status']} listing_id={row['listing_id']}")
+    check("skip: no daily_posts row written", len(store.posts) == 0,
+          str(store.posts))
+    check("skip: store rows byte-identical before/after",
+          {s: r["status"] for s, r in store.recipes.items()}
+          == {s: r["status"] for s, r in snapshot.items()})
+
+    store2 = seeded_store(load_example_recipe())
+    summary2 = run_daily_post(store2, dry_run=True, work_dir=work / "skip-dry",
+                              interval=3, today=date(2026, 1, 2))
+    check("dry-run on a non-posting day returns status=dry_run_skip",
+          summary2.get("status") == "dry_run_skip", str(summary2.get("status")))
+    check("dry-run skip: store untouched (recipe draft_ready, 0 posts)",
+          next(iter(store2.recipes.values()))["status"] == "draft_ready"
+          and len(store2.posts) == 0)
+
+
+def _raises(fn, *args: Any) -> bool:
+    try:
+        fn(*args)
+        return False
+    except ValueError:
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -537,12 +629,19 @@ def _main(argv: Optional[List[str]] = None) -> int:
     print("Fragrance Bot — Etsy posting pipeline verification (mock Etsy API)")
     print("=" * 74)
 
+    # Pin the posting cadence to 1 day for the posting tests below: they run
+    # against the REAL calendar date, and must not depend on what day today
+    # is. The posting-day rule itself is verified separately with explicit
+    # dates in test_posting_day_rule.
+    os.environ["FRAGBOT_POST_INTERVAL_DAYS"] = "1"
+
     mock = MockServer()
     work = Path(args.work_dir) if args.work_dir else Path(tempfile.mkdtemp(prefix="verify-etsy-"))
     work.mkdir(parents=True, exist_ok=True)
     print(f"mock Etsy: {mock.base_url}   work dir: {work}")
 
     try:
+        test_posting_day_rule(work)
         test_happy_path(mock, work)
         test_rate_limiting(mock, work)
         test_retry_429(mock, work)

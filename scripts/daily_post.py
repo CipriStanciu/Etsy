@@ -34,6 +34,18 @@ returns recipes that are still ``draft_ready`` with no listing_id.
 Dry-run (--dry-run) does everything except touch Etsy (and the store): it
 prints the exact payloads that would be sent.
 
+Posting cadence (config-driven, NOT hardcoded): the GitHub Actions workflow
+still triggers *daily* at 08:00 UTC, but the script only posts on "posting
+days" — those where (today - 2026-01-01).days % interval == 0, with
+``interval`` read from FRAGBOT_POST_INTERVAL_DAYS (default 3 → one listing
+every 3 days; set 1 for every day, 2 for every 2 days, etc.). On a non-posting
+day the script logs ``not a posting day (interval N) — nothing to do`` and
+exits 0 — green workflow, and CRUCIALLY it touches nothing: no recipe is
+consumed, no ``daily_posts`` row is created, no Etsy listing is attempted, so
+the queue and store are byte-identical. The existing skip-day retry semantics
+are unchanged: on a real Etsy error the run exits non-zero and the recipe
+stays ``draft_ready`` to be retried on the next posting day.
+
 Usage
 -----
     # live (add --promo to also render the 4 social promo assets)
@@ -41,6 +53,10 @@ Usage
 
     # dry run against an example recipe (no credentials needed)
     python3 scripts/daily_post.py --dry-run
+
+    # simulate a specific date for the posting-day decision (test hook)
+    python3 scripts/daily_post.py --dry-run --date 2026-01-01   # posting day
+    python3 scripts/daily_post.py --dry-run --date 2026-01-02   # non-posting
 
     # against the local mock + in-memory store (verification)
     python3 scripts/daily_post.py --store stub
@@ -75,6 +91,54 @@ IMAGE_KINDS = ["hero", "ingredients", "pyramid", "included", "lifestyle"]
 BRAND = "Fragrance Bot"
 
 RESEND_URL = "https://api.resend.com/emails"
+
+# ---------------------------------------------------------------------------
+# Posting cadence (config-driven, default every 3 days)
+# ---------------------------------------------------------------------------
+# Day index is measured from a FIXED anchor (the seed start date) so the
+# cadence is deterministic and independent of the cron's day-of-month: today
+# is a posting day iff (today - anchor).days % interval == 0.
+POSTING_ANCHOR = date(2026, 1, 1)
+POSTING_INTERVAL_ENV = "FRAGBOT_POST_INTERVAL_DAYS"
+DEFAULT_POST_INTERVAL_DAYS = 3
+
+
+def posting_interval_days() -> int:
+    """Posting cadence from FRAGBOT_POST_INTERVAL_DAYS (default 3).
+
+    Validated: must be a positive integer. A bad value is a hard config
+    error (raises ValueError) — it must never silently post daily or skip
+    forever.
+    """
+    raw = os.environ.get(POSTING_INTERVAL_ENV, "").strip()
+    if not raw:
+        return DEFAULT_POST_INTERVAL_DAYS
+    try:
+        n = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{POSTING_INTERVAL_ENV} must be a positive integer, got {raw!r}"
+        ) from exc
+    if n < 1:
+        raise ValueError(f"{POSTING_INTERVAL_ENV} must be >= 1, got {n}")
+    return n
+
+
+def is_posting_day(today: Optional[date] = None,
+                   interval: Optional[int] = None,
+                   anchor: date = POSTING_ANCHOR) -> bool:
+    """True when *today* is a posting day for the given interval.
+
+    Pure rule: day_index = (today - anchor).days; posting day iff
+    day_index % interval == 0. When *interval* is None the env-configured
+    value is used (see posting_interval_days). The anchor is fixed at
+    2026-01-01 so the cadence is stable across restarts and never drifts
+    with the cron day-of-month.
+    """
+    today = today or date.today()
+    if interval is None:
+        interval = posting_interval_days()
+    return (today - anchor).days % interval == 0
 
 
 # ---------------------------------------------------------------------------
@@ -169,15 +233,42 @@ def run_daily_post(
     work_dir: Optional[Path] = None,
     client: Optional[EtsyClient] = None,
     promo: bool = False,
+    interval: Optional[int] = None,
+    today: Optional[date] = None,
 ) -> Dict[str, Any]:
     """Run one daily posting cycle. Returns a summary dict.
+
+    Posting-cadence guard: when *today* is not a posting day (see
+    is_posting_day) the cycle returns immediately with a ``skip`` summary —
+    BEFORE touching the store, the filesystem or Etsy — so a workflow run on
+    a non-posting day is green (exit 0) and writes nothing anywhere.
 
     Raises EtsyError on failure (caller decides exit code); the store is
     only mutated on full success (mark_listed) — except a best-effort
     daily_posts 'failed' record.
     """
-    today = date.today()
-    summary: Dict[str, Any] = {"date": today.isoformat(), "dry_run": dry_run}
+    today = today or date.today()
+    if interval is None:
+        interval = posting_interval_days()
+    summary: Dict[str, Any] = {
+        "date": today.isoformat(),
+        "dry_run": dry_run,
+        "interval_days": interval,
+    }
+
+    if not is_posting_day(today, interval):
+        # Not a posting day: nothing to do, and NOTHING may be touched —
+        # no recipe consumed, no daily_posts row, no listing, no assets.
+        msg = f"not a posting day (interval {interval}) — nothing to do"
+        if dry_run:
+            print(f"would skip: {msg}")
+            summary["status"] = "dry_run_skip"
+        else:
+            log.info(msg)
+            summary["status"] = "skip"
+        return summary
+    if dry_run:
+        print(f"posting day (interval {interval}) — would post")
 
     row = store.get_next_draft_recipe()
     if row is None:
@@ -281,8 +372,8 @@ def run_daily_post(
         # the listing id makes manual cleanup possible.
         log.error(
             "POSTING FAILED after creating Etsy listing %s (draft left on Etsy "
-            "for manual cleanup); recipe %s stays draft_ready and will be retried"
-            " tomorrow.", listing_id, recipe["slug"],
+            "for manual cleanup); recipe %s stays draft_ready and will be "
+            "retried on the next posting day.", listing_id, recipe["slug"],
         )
         raise
 
@@ -355,6 +446,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="also render the 4 social promo assets (pin.jpg, "
                          "story.jpg, tiktok.txt, email.txt) into "
                          "<work-dir>/promo as a byproduct of the post")
+    ap.add_argument("--date", default=None,
+                    help="simulate this calendar date (YYYY-MM-DD) for the "
+                         "posting-day decision and summary; default: today. "
+                         "Testing hook — the real cron never passes it.")
     return ap
 
 
@@ -371,6 +466,23 @@ def main(argv: Optional[list] = None, store=None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=handlers,
     )
+
+    # posting cadence + optional simulated date (validate BEFORE any work:
+    # a bad interval must fail loudly, never silently post/skip forever)
+    try:
+        interval = posting_interval_days()
+    except ValueError as exc:
+        log.error("bad posting interval: %s", exc)
+        return 2
+    sim_today = None
+    if args.date:
+        try:
+            sim_today = date.fromisoformat(args.date)
+        except ValueError:
+            log.error("--date must be YYYY-MM-DD, got %r", args.date)
+            return 2
+        log.info("simulating date %s (posting-day decision only)",
+                 sim_today.isoformat())
 
     # store selection (an injected store wins — used by the verify harness)
     if store is None:
@@ -389,7 +501,7 @@ def main(argv: Optional[list] = None, store=None) -> int:
     try:
         run_daily_post(store, dry_run=args.dry_run, work_dir=(
             Path(args.work_dir) if args.work_dir else None),
-            promo=args.promo)
+            promo=args.promo, interval=interval, today=sim_today)
     except EtsyError as exc:
         # Owner spec: log, leave the recipe draft_ready, exit non-zero.
         log.error("daily post failed: %s", exc)
