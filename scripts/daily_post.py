@@ -84,6 +84,7 @@ from fragbot.etsy.errors import EtsyError, EtsyValidationError  # noqa: E402
 from fragbot.imagesgen import render_recipe  # noqa: E402
 from fragbot.pdfgen import generate_pdf  # noqa: E402
 from fragbot.schema import assert_valid  # noqa: E402
+from fragbot.seo import make_image_alt  # noqa: E402
 
 log = logging.getLogger("fragbot.daily_post")
 
@@ -415,16 +416,14 @@ def _load_example_recipe() -> Dict[str, Any]:
 
 
 def image_alt(recipe: Dict[str, Any], kind: str) -> str:
-    """Short alt text (<=500 chars per Etsy spec) for each listing image."""
-    base = f"{recipe['recipe_name']} — DIY {recipe['category'].replace('_', ' ')} recipe"
-    labels = {
-        "hero": "digital download cover card",
-        "ingredients": "ingredient list with measurements",
-        "pyramid": "scent pyramid top heart base notes",
-        "included": "what's included in the download",
-        "lifestyle": "finished product look",
-    }
-    return f"{base} ({labels.get(kind, kind)}) by Fragrance Bot"
+    """Short alt text (<=500 chars per Etsy spec) for each listing image.
+
+    Delegates to fragbot.seo.make_image_alt (category + note pair + "digital
+    download") and appends the brand — the invented recipe name is dropped
+    from alt text (gap-analysis §4.7).
+    """
+    base = make_image_alt(recipe["category"], recipe["scent_profile"], kind)
+    return f"{base} by Fragrance Bot"
 
 
 # ---------------------------------------------------------------------------
