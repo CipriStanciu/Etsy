@@ -20,11 +20,21 @@ Checks (spec rules 1-10):
   6. Holiday detection windows (Valentine's, Mother's Day, Christmas) and
      weekend premiums are applied to names, themes and prices.
   7. Determinism: same date + same config -> identical recipe JSON.
+  8. SEO keyword engine (gap-analysis upgrade): every listing carries a
+     note-based tag from its actual blend; holiday gift tags only inside
+     their windows; season tags in-season; titles front-load the category
+     phrase, keep the heart+base note pair and end with "Digital Download";
+     image alt text = category + note pair + digital download; no
+     hard-constrained claim terms in shipped copy (the claim gate is ON by
+     default per the owner's rev-8 policy, so shipped copy carries only the
+     approved soft claims "long lasting" / "calming blend"); no "kit" / "oil"
+     phrase in any tag slot (physical-intent guard).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -36,6 +46,7 @@ from fragbot.generator import balance_of
 from fragbot.ingredients import CARRIER_PRICES, OILS
 from fragbot.pricing import DIFFICULTY_BASE, HOLIDAY_PREMIUM, WEEKEND_PREMIUM
 from fragbot.schema import EXPECTED_KEYS, validate
+from fragbot.seo import key_note_pair, make_image_alt  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Independent re-implementations of the spec rules (not imported from fragbot),
@@ -252,6 +263,128 @@ def main() -> int:
     diffs_seen = {r["difficulty"] for r in recipes}
     check(diffs_seen <= {"beginner", "intermediate", "advanced"} and len(diffs_seen) >= 2,
           "difficulty varies", f"(got {sorted(diffs_seen)})")
+
+    # --- 8. SEO keyword engine (gap-analysis upgrade): adaptive tags, titles,
+    #        alt text, occasion fixes and the claim guardrail.
+    # Independent re-derivations (not imported from fragbot.seo) so the check
+    # is real: the note-tag suffix map, holiday gift map and season map are
+    # restated here from the analyst's [REC] pools.
+    NOTE_SUFFIX = {"perfume": "perfume", "cologne": "cologne", "candle": "candle",
+                   "reed_diffuser": "diffuser", "room_spray": "spray",
+                   "solid_perfume": "balm"}
+    HOLIDAY_GIFT = {"Valentine's Day": "valentines gift", "Christmas": "christmas gift",
+                    "Mother's Day": "mothers day gift"}
+    CANDLE_SEASON = {12: "christmas candle", 1: "cozy candle", 2: "cozy candle",
+                     3: "spring candle", 4: "spring candle", 5: "spring candle",
+                     6: "summer candle", 7: "summer candle", 8: "summer candle",
+                     9: "fall candle", 10: "fall candle", 11: "fall candle"}
+    GENERIC_SEASON = {12: "cozy scent", 1: "cozy scent", 2: "cozy scent",
+                      3: "spring scent", 4: "spring scent", 5: "spring scent",
+                      6: "summer scent", 7: "summer scent", 8: "summer scent",
+                      9: "fall scent", 10: "fall scent", 11: "fall scent"}
+    CLAIMS_ENV = "FRAGBOT_ALLOW_CLAIMS"
+    # Owner policy (business plan rev 8, 2026-09-16): the soft truthful claims
+    # are APPROVED and ship with the gate ON by default. The hard-constrained
+    # terms below must never reach shipped copy, gate or no gate.
+    APPROVED_SOFT_CLAIMS = ("long lasting", "calming blend")
+    BANNED_CLAIM_TERMS = ("non toxic", "cruelty free", "stress relief",
+                          "sleep spray", "vegan")   # vegan never tags (beeswax)
+    # Analyst DO-NOT-USE: "kit"/"oil" phrases are physical-intent searches that
+    # a PDF recipe card cannot satisfy, so they may not occupy a tag slot.
+    # "kit" is banned outright; "oil" is banned except inside the analyst's
+    # KEPT material phrase "essential oil ..." (Tier 1: "essential oil blend"
+    # is the strongest cross-category exact phrase and stays).
+    KIT_TAG_TERMS = ("kit",)
+    OIL_TAG_TERMS = ("oil",)
+    OIL_ALLOWED_SUBSTRING = "essential oil"
+
+    claims_was = os.environ.pop(CLAIMS_ENV, None)   # unset = default = claims ON
+    note_tag_ok = holiday_tag_ok = outside_holiday_tag_ok = season_tag_ok = True
+    title_ok = True
+    title_bad = []
+    alt_ok = True
+    claim_free_ok = True
+    banned_hits = []
+    soft_hits = set()
+    kit_oil_hits = []
+    for d, r in zip(days, recipes):
+        sp = r["scent_profile"]
+        notes = [n.lower() for n in sp["top_notes"] + sp["heart_notes"] + sp["base_notes"]]
+        suffix = NOTE_SUFFIX[r["category"]]
+        blend_note_tags = {f"{n} {suffix}" for n in notes if len(f"{n} {suffix}") <= 20}
+        if not any(t in blend_note_tags for t in r["tags"]):
+            note_tag_ok = False
+            print(f"  [debug] no blend-note tag on {d}: {r['tags']}")
+        hol = r["holiday"]
+        if hol:
+            if HOLIDAY_GIFT[hol] not in r["tags"]:
+                holiday_tag_ok = False
+                print(f"  [debug] missing {HOLIDAY_GIFT[hol]!r} on {d} ({hol})")
+        elif any(g in r["tags"] for g in HOLIDAY_GIFT.values()):
+            outside_holiday_tag_ok = False
+            print(f"  [debug] holiday gift tag outside its window on {d}: {r['tags']}")
+        want_season = CANDLE_SEASON[d.month] if r["category"] == "candle" else GENERIC_SEASON[d.month]
+        if want_season not in r["tags"]:
+            season_tag_ok = False
+            print(f"  [debug] missing season tag {want_season!r} on {d} ({r['category']})")
+        t = r["full_title"]
+        pair = key_note_pair(sp)
+        if not (len(t) <= 140 and t.startswith("DIY ") and pair in t
+                and "Digital Download" in t and "Holiday Cozy" not in t):
+            title_ok = False
+            title_bad.append((d.isoformat(), t))
+        text = f"{t} {' '.join(r['tags'])} {r['description_long']}".lower()
+        for term in BANNED_CLAIM_TERMS:
+            if term in text:
+                claim_free_ok = False
+                banned_hits.append((d.isoformat(), term))
+        soft_hits.update(term for term in APPROVED_SOFT_CLAIMS if term in text)
+        for tag in r["tags"]:
+            bad = any(k in tag for k in KIT_TAG_TERMS) or (
+                any(o in tag for o in OIL_TAG_TERMS)
+                and OIL_ALLOWED_SUBSTRING not in tag
+            )
+            if bad:
+                kit_oil_hits.append((d.isoformat(), tag))
+        alt = make_image_alt(r["category"], sp)
+        if not (len(alt) <= 500 and r["category"].replace("_", " ") in alt.lower()
+                and pair.lower() in alt.lower() and "digital download" in alt.lower()):
+            alt_ok = False
+            print(f"  [debug] poor alt text on {d}: {alt!r}")
+    check(note_tag_ok, "every listing carries a note-based tag from its actual blend")
+    check(holiday_tag_ok, "holiday gift tags appear on their holiday dates")
+    check(outside_holiday_tag_ok, "no holiday gift tag outside its holiday window")
+    check(season_tag_ok, "season tags appear in-season (fall candle, cozy scent, ...)")
+    check(title_ok, "title front-loads category, keeps the note pair, ends Digital Download",
+          f"{title_bad[:3]}")
+    check(claim_free_ok, "default copy carries no hard-constrained claim term "
+          "(non toxic / stress relief / sleep spray / vegan)", f"{banned_hits[:3]}")
+    check(soft_hits == set(APPROVED_SOFT_CLAIMS),
+          "claim gate ON by default: approved soft claims ship (long lasting + calming blend)",
+          f"(got {sorted(soft_hits)})")
+    check(not kit_oil_hits, "no 'kit'/'oil' phrase in any tag slot (physical-intent guard)",
+          f"{kit_oil_hits[:3]}")
+    check(alt_ok, "image alt text has category + note pair + digital download (<= 500 chars)")
+    # gate behaviour: default (unset or blank) ON, truthy ON, explicit falsy OFF
+    probe = date(2026, 1, 5)   # a Monday -> perfume ("long lasting" alternate)
+
+    def _probe_tags(value):
+        os.environ[CLAIMS_ENV] = value
+        tags = generate_recipe(probe)["tags"]
+        assert len(tags) == 13 and len(set(tags)) == 13, tags
+        return tags
+
+    off_tags, on_tags, blank_tags = _probe_tags("0"), _probe_tags("1"), _probe_tags("")
+    if claims_was is None:
+        os.environ.pop(CLAIMS_ENV, None)
+    else:
+        os.environ[CLAIMS_ENV] = claims_was
+    gate_ok = ("long lasting" not in off_tags
+               and "long lasting" in on_tags
+               and "long lasting" in blank_tags
+               and "beginner friendly" in off_tags)
+    check(gate_ok, "FRAGBOT_ALLOW_CLAIMS: unset/blank/1 = ON, explicit 0 = OFF (13 tags either way)",
+          f"(off={off_tags[-1]!r} on={on_tags[-1]!r})")
 
     # -----------------------------------------------------------------------
     print("=" * 78)

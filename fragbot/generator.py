@@ -353,14 +353,14 @@ class RecipeGenerator:
         cost = pricing.estimate_cost(self.category, blend["top"] + blend["heart"] + blend["base"])
         cost_str = pricing.format_cost(cost)
         slug = seo.make_slug(self.recipe_name, self.category)
-        full_title = seo.make_title(self.recipe_name, self.category, self.scent_profile, self.d)
-        tags = seo.make_tags(self.category)
+        full_title = seo.make_title(self.category, self.scent_profile, self.d)
+        tags = seo.make_tags(self.category, self.d, self.scent_profile)
         description = seo.make_description(
-            self.recipe_name,
             self.category,
             self.scent_profile,
             self.theme,
             self.holiday,
+            seo.season_word(self.d),
             self.difficulty,
             cfg["yield"],
             cost_str,

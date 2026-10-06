@@ -38,14 +38,18 @@ THEME_VIBE: Dict[str, str] = {
     "Sunday Reset": "clean",
 }
 
+# Occasion phrases. The gap analysis (§4.3) flagged the old values as
+# non-search phrases ("Holiday Cozy", "Monday Morning Energy", ...). seo.py
+# now builds its own title tail (searchable recipient/benefit phrases), and
+# occasion_phrase is retained for API compatibility with searchable values.
 THEME_OCCASION: Dict[str, str] = {
-    "Monday Mood": "Monday Morning Energy",
-    "Cozy Tuesday": "Cozy Night In",
-    "Wellness Wednesday": "Wellness Reset",
-    "Date Night": "Date Night Elegance",
-    "Friday Luxe": "Everyday Luxury",
-    "Weekend Project": "Weekend Home Refresh",
-    "Sunday Reset": "Sunday Reset",
+    "Monday Mood": "Energizing Scent",
+    "Cozy Tuesday": "Cozy Scent",
+    "Wellness Wednesday": "Calming Scent",
+    "Date Night": "Date Night Scent",
+    "Friday Luxe": "Luxury Scent",
+    "Weekend Project": "Home Scent",
+    "Sunday Reset": "Fresh Scent",
 }
 
 # Family pools per theme level. Oils are grouped by family in ingredients.json.
@@ -162,8 +166,8 @@ SEASON_FAMILIES: Dict[str, Dict[str, List[str]]] = {
 
 HOLIDAY_OCCASION: Dict[str, str] = {
     "Valentine's Day": "Valentine's Day Gift",
-    "Christmas": "Holiday Cozy",
-    "Mother's Day": "Mother's Day Elegance",
+    "Christmas": "Christmas Gift",       # was "Holiday Cozy" — a search miss
+    "Mother's Day": "Mother's Day Gift",  # was "Mother's Day Elegance"
 }
 
 

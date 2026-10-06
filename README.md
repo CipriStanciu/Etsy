@@ -102,7 +102,11 @@ and listing would actually print); day-of-week category rotation incl. the
 skin-restricted oils in skin-contact products, ≤ 1 phototoxic citrus per skin
 blend with warning note, ≤ 1 sensitizer-class oil per blend, coumarin warning);
 holiday windows (Valentine's Feb 7–14, Mother's Day, Christmas Dec 18–26);
-determinism (same date + same seq → identical JSON); carrier completeness.
+determinism (same date + same seq → identical JSON); carrier completeness;
+SEO keyword engine (note-based tags match the actual blend, holiday gift
+tags only in their windows, season tags in-season, titles keep the note
+pair, alt text = category + notes + digital download, no unapproved claim
+terms by default, claim gate unlocks them when opted in).
 
 ## Recipe JSON schema
 
@@ -111,7 +115,14 @@ Exactly the fields below (plus the two sanctioned extensions `theme` and
 
 - `recipe_name` — unique two-word luxury name (never reused within a 6400-recipe
   cycle ≈ 17.5 years; driven by a coprime stride over the date ordinal).
-- `full_title` — ≤ 140 chars: `DIY <Name> <Category> Recipe | <Key Notes> | <Occasion> | Digital Download`
+- `full_title` — ≤ 140 chars, front-loaded per the SEO keyword engine:
+  `DIY <Category-heading> Recipe | <Heart> & <Base> <Form> | <Benefit/Recipient> | Digital Download`
+  (e.g. `DIY Perfume Making Recipe | Lavender & Frankincense Roll-On |
+  Natural Gift for Her | Digital Download`). No title head carries "Kit"
+  ("kit" searches are physical-intent; the listing sells a PDF recipe card).
+  The invented recipe name is
+  intentionally not in the title; the heart+base note pair is never dropped
+  (the trim cascade removes the benefit/format tails first).
 - `slug` — `<name>-diy-<category>-recipe`, URL-safe.
 - `category` — `perfume | cologne | candle | reed_diffuser | room_spray | solid_perfume`
 - `difficulty` — `beginner | intermediate | advanced`
@@ -123,7 +134,22 @@ Exactly the fields below (plus the two sanctioned extensions `theme` and
 - `description_long` — SEO copy with the six spec sections
   (Hook / What You Get / Scent Profile / How It Works / Safety & Tips /
   Instant Download)
-- `tags` — exactly 13, each ≤ 20 chars, category-aware
+- `tags` — exactly 13 unique, each ≤ 20 chars: 9 core per category + 4
+  rotating slots that are pure functions of (date, category, blend): a
+  note-based tag from the actual blend (e.g. `lavender perfume`, `vanilla
+  candle`), a holiday gift tag at holiday time (`valentines gift`,
+  `christmas gift`, `mothers day gift`) else a recipient tag (`gift for
+  her/him`, `hostess gift`, `self care gift`), a season tag in-season
+  (`fall candle`, `summer scent`, `cozy scent`, ...), and a benefit tag
+  (`beginner friendly`, `calming blend`, ...). No "kit" / "oil" phrase may
+  occupy a tag slot (physical-intent mismatch with a PDF; `essential oil
+  blend` / `essential oil recipe` stay — they are material terms, not
+  products). Claim tags: the owner-approved SOFT claims (`long lasting`,
+  `calming blend`) ship by default — `FRAGBOT_ALLOW_CLAIMS` defaults ON and
+  only an explicit `0`/`false`/`off`/`no` turns it off. Hard-constrained
+  terms (`non toxic`, `cruelty free`, `stress relief`, `sleep spray`, any
+  medical claim) are never emitted automatically; `vegan` is never tagged
+  (solid perfume uses beeswax).
 - `theme` — 7-day content theme; `holiday` — `null` or a named holiday
 
 ## Generation rules (owner's spec) — how they're implemented
@@ -156,8 +182,14 @@ Exactly the fields below (plus the two sanctioned extensions `theme` and
 7. **Pricing** — beginner $3.99 / intermediate $5.99 / advanced $7.99;
    Sat+Sun +$1.00; holiday +$2.00; capped at $9.99 per the owner's range
    (advanced + weekend + holiday would otherwise compute to $10.99).
-8. **SEO** — title formula above; 13 category-aware tags; description with the
-   six required sections.
+8. **SEO** — titles front-load the category phrase + heart/base note pair +
+   benefit/recipient (brand name dropped, notes never trimmed); 13 tags =
+   9 core + 4 rotating slots driven by holiday/season/theme/actual blend
+   notes; description hook opens with "Make your own <label> at home" plus
+   season + beginner + recipient keywords; image alt text = category + note
+   pair + "digital download". Owner-approved soft claim tags (`long lasting`,
+   `calming blend`) ship by default; `FRAGBOT_ALLOW_CLAIMS=0` disables them.
+   Hard-constrained claim terms are never emitted automatically.
 9. **Determinism** — `random.Random(f"{date}|{seq}")`; same date + same seq →
    identical JSON. Consecutive dates differ by construction (name permutation +
    rotating ingredient windows).
